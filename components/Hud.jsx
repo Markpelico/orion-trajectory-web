@@ -1,0 +1,367 @@
+"use client";
+
+import { memo, useEffect, useRef, useState } from "react";
+import { motion, AnimatePresence } from "motion/react";
+import {
+  PHASES,
+  T_START,
+  T_END,
+  stateAt,
+  phaseIndexAt,
+  formatMET,
+} from "@/lib/mission";
+import { useMission } from "@/lib/store";
+
+const SPAN = T_END - T_START;
+
+/* ------------------------------------------------------------- Top bar -- */
+
+function TopBar({ met }) {
+  return (
+    <header className="hud-top">
+      <div className="hud-id">
+        <span className="hud-id-main">ORION · TRAJECTORY DISPLAY</span>
+        <span className="hud-id-sub">EFT-1 REPLAY // SIMPLIFIED PROFILE</span>
+      </div>
+      <div className="hud-clock" aria-label="Mission elapsed time">
+        {formatMET(met)}
+      </div>
+      <nav className="hud-links">
+        <a
+          className="hud-link"
+          href="https://github.com/Markpelico/orion-trajectory-display"
+          target="_blank"
+          rel="noreferrer"
+        >
+          SOURCE ↗
+        </a>
+        <a className="hud-link" href="https://www.markpelico.com" target="_blank" rel="noreferrer">
+          MARKPELICO.COM ↗
+        </a>
+      </nav>
+    </header>
+  );
+}
+
+/* ---------------------------------------------------------- Phase rail -- */
+
+const PhaseRail = memo(function PhaseRail({ phaseIdx }) {
+  return (
+    <ol className="hud-rail" aria-label="Mission phases">
+      {PHASES.map((p, i) => (
+        <li
+          key={p.name}
+          className={
+            i === phaseIdx ? "hud-rail-item is-active" : i < phaseIdx ? "hud-rail-item is-past" : "hud-rail-item"
+          }
+        >
+          <span className="hud-rail-tick" aria-hidden="true" />
+          {p.short}
+        </li>
+      ))}
+    </ol>
+  );
+});
+
+/* ---------------------------------------------------------- Phase slam -- */
+
+const PhaseSlam = memo(function PhaseSlam({ phaseIdx, reducedMotion }) {
+  const [shown, setShown] = useState(null);
+
+  useEffect(() => {
+    if (phaseIdx < 1) return; // countdown handled separately
+    setShown(phaseIdx);
+    const id = setTimeout(() => setShown(null), 2400);
+    return () => clearTimeout(id);
+  }, [phaseIdx]);
+
+  const phase = shown != null ? PHASES[shown] : null;
+  const isEntry = shown != null && shown >= 8;
+
+  return (
+    <div className="hud-slam" aria-live="polite">
+      <AnimatePresence mode="wait">
+        {phase && (
+          <motion.h2
+            key={phase.name}
+            className={isEntry ? "hud-slam-text is-entry" : "hud-slam-text"}
+            initial={
+              reducedMotion
+                ? { opacity: 0 }
+                : { opacity: 0, scale: 1.08, filter: "blur(16px)", letterSpacing: "0.5em" }
+            }
+            animate={
+              reducedMotion
+                ? { opacity: 1 }
+                : { opacity: 1, scale: 1, filter: "blur(0px)", letterSpacing: "0.14em" }
+            }
+            exit={
+              reducedMotion
+                ? { opacity: 0 }
+                : { opacity: 0, y: -28, filter: "blur(10px)" }
+            }
+            transition={{ duration: 0.55, ease: [0.19, 1, 0.22, 1] }}
+          >
+            {phase.name}
+          </motion.h2>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+});
+
+/* ----------------------------------------------------------- Countdown -- */
+
+function Countdown({ met }) {
+  if (met >= 0) return null;
+  const n = Math.ceil(-met);
+  return (
+    <div className="hud-slam" aria-hidden="true">
+      <motion.div
+        key={n}
+        className="hud-count"
+        initial={{ opacity: 0, scale: 1.35 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{ duration: 0.3, ease: "easeOut" }}
+      >
+        {n}
+      </motion.div>
+    </div>
+  );
+}
+
+/* ----------------------------------------------------------- Telemetry -- */
+
+function Spark({ history, accent }) {
+  const w = 120;
+  const h = 26;
+  if (history.length < 2) return <svg className="hud-spark" width={w} height={h} />;
+  const min = Math.min(...history);
+  const max = Math.max(...history);
+  const range = max - min || 1;
+  const pts = history
+    .map((v, i) => `${(i / (history.length - 1)) * w},${h - 2 - ((v - min) / range) * (h - 4)}`)
+    .join(" ");
+  return (
+    <svg className="hud-spark" width={w} height={h} aria-hidden="true">
+      <polyline points={pts} fill="none" stroke={accent ? "#fc3d21" : "#8fa3c8"} strokeWidth="1" />
+    </svg>
+  );
+}
+
+function Telemetry({ s }) {
+  // Rolling history, pushed at ~5 Hz wall clock — the web echo of the
+  // desktop tool's rolling matplotlib panels.
+  const hist = useRef({ alt: [], speed: [], g: [], last: 0 });
+  const now = performance.now();
+  if (now - hist.current.last > 200) {
+    hist.current.last = now;
+    const push = (arr, v) => {
+      arr.push(v);
+      if (arr.length > 120) arr.shift();
+    };
+    push(hist.current.alt, s.alt);
+    push(hist.current.speed, s.speed);
+    push(hist.current.g, s.g);
+  }
+
+  const cards = [
+    { label: "ALTITUDE", value: s.alt >= 1000 ? Math.round(s.alt).toLocaleString() : s.alt.toFixed(1), unit: "KM", hist: hist.current.alt },
+    { label: "VELOCITY", value: s.speed.toFixed(2), unit: "KM/S", hist: hist.current.speed },
+    { label: "DOWNRANGE", value: Math.round(s.downrange).toLocaleString(), unit: "KM", hist: null },
+    { label: "G-LOAD", value: s.g.toFixed(1), unit: "G", hist: hist.current.g, accent: s.g > 4 },
+  ];
+
+  return (
+    <div className="hud-telemetry">
+      {cards.map((c) => (
+        <div key={c.label} className={c.accent ? "hud-card is-accent" : "hud-card"}>
+          <span className="hud-card-label">{c.label}</span>
+          <span className="hud-card-value">
+            {c.value}
+            <span className="hud-card-unit">{c.unit}</span>
+          </span>
+          {c.hist && <Spark history={c.hist} accent={c.accent} />}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------ Controls -- */
+
+const WARPS = ["auto", 1, 10, 60, 300];
+
+function Controls() {
+  const warp = useMission((s) => s.warp);
+  const camMode = useMission((s) => s.camMode);
+  const playing = useMission((s) => s.playing);
+  const complete = useMission((s) => s.complete);
+  const { setWarp, setCamMode, togglePlay } = useMission.getState();
+
+  return (
+    <div className="hud-controls">
+      <div className="hud-btn-group" role="group" aria-label="Playback">
+        <button className="hud-btn" onClick={togglePlay} disabled={complete}>
+          {playing ? "PAUSE" : "PLAY"}
+        </button>
+      </div>
+      <div className="hud-btn-group" role="group" aria-label="Time warp">
+        {WARPS.map((w) => (
+          <button
+            key={w}
+            className={warp === w ? "hud-btn is-on" : "hud-btn"}
+            onClick={() => setWarp(w)}
+          >
+            {w === "auto" ? "AUTO" : `${w}×`}
+          </button>
+        ))}
+      </div>
+      <div className="hud-btn-group" role="group" aria-label="Camera">
+        {["chase", "orbit"].map((m) => (
+          <button
+            key={m}
+            className={camMode === m ? "hud-btn is-on" : "hud-btn"}
+            onClick={() => setCamMode(m)}
+          >
+            {m.toUpperCase()}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------ Scrubber -- */
+
+function Scrubber({ met }) {
+  const barRef = useRef(null);
+  const seek = useMission((s) => s.seek);
+  const frac = (met - T_START) / SPAN;
+
+  function seekFromEvent(e) {
+    const rect = barRef.current.getBoundingClientRect();
+    const f = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    seek(T_START + f * SPAN);
+  }
+
+  return (
+    <div
+      ref={barRef}
+      className="hud-scrub"
+      role="slider"
+      aria-label="Mission time"
+      aria-valuemin={T_START}
+      aria-valuemax={T_END}
+      aria-valuenow={Math.round(met)}
+      aria-valuetext={formatMET(met)}
+      tabIndex={0}
+      onPointerDown={(e) => {
+        e.currentTarget.setPointerCapture(e.pointerId);
+        seekFromEvent(e);
+      }}
+      onPointerMove={(e) => e.buttons === 1 && seekFromEvent(e)}
+      onKeyDown={(e) => {
+        if (e.key === "ArrowRight") seek(met + SPAN * 0.01);
+        if (e.key === "ArrowLeft") seek(met - SPAN * 0.01);
+      }}
+    >
+      <div className="hud-scrub-track">
+        <div className="hud-scrub-fill" style={{ width: `${frac * 100}%` }} />
+        {PHASES.map((p) => (
+          <span
+            key={p.name}
+            className="hud-scrub-tick"
+            style={{ left: `${((p.t - T_START) / SPAN) * 100}%` }}
+            title={p.name}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------ Complete -- */
+
+function Complete() {
+  const complete = useMission((s) => s.complete);
+  const restart = useMission((s) => s.restart);
+  return (
+    <AnimatePresence>
+      {complete && (
+        <motion.div
+          className="hud-complete"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.6 }}
+        >
+          <motion.h2
+            className="hud-complete-title"
+            initial={{ opacity: 0, y: 24, filter: "blur(10px)" }}
+            animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+            transition={{ delay: 0.25, duration: 0.7, ease: [0.19, 1, 0.22, 1] }}
+          >
+            SPLASHDOWN
+            <br />
+            CONFIRMED
+          </motion.h2>
+          <div className="hud-complete-stats">
+            <div>
+              <span>PEAK ALTITUDE</span>
+              <strong>5,800 KM</strong>
+            </div>
+            <div>
+              <span>ENTRY VELOCITY</span>
+              <strong>9.1 KM/S</strong>
+            </div>
+            <div>
+              <span>MISSION TIME</span>
+              <strong>{formatMET(T_END - 10).slice(3)}</strong>
+            </div>
+          </div>
+          <div className="hud-complete-actions">
+            <button className="hud-btn is-big" onClick={restart}>
+              REPLAY MISSION
+            </button>
+            <a
+              className="hud-btn is-big"
+              href="https://github.com/Markpelico/orion-trajectory-display"
+              target="_blank"
+              rel="noreferrer"
+            >
+              DESKTOP VERSION ↗
+            </a>
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+/* ---------------------------------------------------------------- Root -- */
+
+export default function Hud({ reducedMotion }) {
+  const met = useMission((s) => s.met);
+  const s = stateAt(met);
+  const phaseIdx = phaseIndexAt(met);
+
+  return (
+    <div className="hud">
+      <TopBar met={met} />
+      <PhaseRail phaseIdx={phaseIdx} />
+      <PhaseSlam phaseIdx={phaseIdx} reducedMotion={reducedMotion} />
+      <Countdown met={met} />
+      <div className="hud-bottom">
+        <Telemetry s={s} />
+        <Controls />
+        <Scrubber met={met} />
+        <p className="hud-note">
+          Replay of a simplified EFT-1 profile from computed state vectors. The desktop
+          version streams live telemetry from a NASA Trick variable server.
+        </p>
+      </div>
+      <Complete />
+    </div>
+  );
+}
