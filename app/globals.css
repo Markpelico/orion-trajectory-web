@@ -54,7 +54,7 @@ body {
       transparent 2px,
       rgba(0, 0, 0, 0.14) 3px
     );
-  opacity: 0.35;
+  opacity: 0.22;
 }
 
 .scanlines::after {
@@ -578,8 +578,23 @@ body {
   }
 
   .hud-card {
-    min-width: 116px;
+    min-width: 104px;
     flex-shrink: 0;
+    padding: 8px 10px 6px;
+  }
+
+  .hud-card-value {
+    font-size: 17px;
+  }
+
+  .hud-controls {
+    gap: 8px;
+  }
+
+  .hud-btn {
+    padding: 6px 9px;
+    font-size: 9px;
+    letter-spacing: 0.12em;
   }
 
   .hud-note {

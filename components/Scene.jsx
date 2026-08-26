@@ -44,7 +44,8 @@ const GRID_FRAG = /* glsl */ `
     float lon = degrees(atan(vWorld.z, vWorld.x));
     float g = max(gridLine(lat, 15.0, 0.30), gridLine(lon, 15.0, 0.30));
     g *= smoothstep(0.0, 0.12, 1.0 - abs(vWorld.y));
-    gl_FragColor = vec4(vec3(0.35, 0.55, 0.95), g * 0.16);
+    // Kept faint: at grazing angles these lines stack and bloom into bars.
+    gl_FragColor = vec4(vec3(0.35, 0.55, 0.95), g * 0.09);
   }
 `;
 
@@ -138,7 +139,7 @@ function Trajectory() {
     dimGeom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
     const fullLine = new THREE.Line(
       dimGeom,
-      new THREE.LineBasicMaterial({ color: "#41506b", transparent: true, opacity: 0.28 })
+      new THREE.LineBasicMaterial({ color: "#5c7099", transparent: true, opacity: 0.45 })
     );
 
     const progressGeom = new THREE.BufferGeometry();
@@ -214,14 +215,14 @@ function OrionModel() {
       {/* Four solar-array wings, X configuration, canted back. */}
       {[45, 135, 225, 315].map((a) => (
         <group key={a} position={[-0.01, 0, 0]} rotation={[THREE.MathUtils.degToRad(a), 0, 0]}>
-          <mesh position={[-0.006, 0.026, 0]} rotation={[0, 0, THREE.MathUtils.degToRad(-14)]}>
-            <boxGeometry args={[0.0062, 0.036, 0.001]} />
+          <mesh position={[-0.006, 0.022, 0]} rotation={[0, 0, THREE.MathUtils.degToRad(-18)]}>
+            <boxGeometry args={[0.0048, 0.028, 0.0008]} />
             <meshStandardMaterial
-              color="#16294d"
-              metalness={0.35}
-              roughness={0.45}
-              emissive="#0a1a3a"
-              emissiveIntensity={0.35}
+              color="#2a4a85"
+              metalness={0.4}
+              roughness={0.35}
+              emissive="#16294d"
+              emissiveIntensity={0.5}
             />
           </mesh>
         </group>
@@ -265,15 +266,15 @@ function Capsule() {
 
   return (
     <group ref={group}>
-      <group ref={model}>
+      <group ref={model} scale={0.7}>
         <OrionModel />
       </group>
-      <sprite scale={[0.05, 0.05, 1]}>
+      <sprite scale={[0.032, 0.032, 1]}>
         <spriteMaterial
           map={glowTex}
           color="#cfe0ff"
           transparent
-          opacity={0.6}
+          opacity={0.5}
           blending={THREE.AdditiveBlending}
           depthWrite={false}
         />
@@ -300,6 +301,21 @@ function CameraRig() {
   const smoothed = useRef(new THREE.Vector3(0, 3, 16));
   const look = useRef(new THREE.Vector3());
 
+  // Mode transitions. Entering orbit: jump to a vantage that frames Earth
+  // and the trajectory, instead of inheriting a chase position that leaves
+  // the night side filling the screen (the reported "black screen").
+  // Returning to chase: sync the smoother so the camera glides, not snaps.
+  useEffect(() => {
+    if (camMode === "orbit") {
+      const s = stateAt(useMission.getState().met);
+      const dir = new THREE.Vector3(s.x, s.y, s.z).normalize();
+      camera.position.copy(dir.multiplyScalar(30)).add(new THREE.Vector3(0, 10, 0));
+      camera.lookAt(0, 0, 0);
+    } else {
+      smoothed.current.copy(camera.position);
+    }
+  }, [camMode, camera]);
+
   useFrame((_, dt) => {
     if (camMode !== "chase") return;
     const met = useMission.getState().met;
@@ -312,15 +328,29 @@ function CameraRig() {
     fwd.normalize();
 
     const out = p.clone().normalize();
-    const dist = 0.55 + (s.alt / 5800) * 3.4;
+    // Far enough back that the capsule reads as a vehicle over a planet,
+    // not a silhouette filling the frame. Low over the pad the camera sits
+    // higher and pitches down so the ground and horizon anchor the launch;
+    // both ease off as altitude builds and space takes over.
+    const low = 1 - Math.min(s.alt / 120, 1); // 1 on the pad -> 0 by 120 km
+    const dist = (1.35 + (s.alt / 5800) * 3.2) * (1 + low);
+    // Low over the pad the camera leads the vehicle and looks back west:
+    // east of Canaveral is featureless Atlantic, so a trailing camera sees
+    // only blue - while the look-back frames the Florida coastline AND puts
+    // the sun behind the lens, front-lighting the spacecraft. The offset
+    // swings smoothly to a conventional trailing chase as altitude builds.
+    const fwdOffset = -dist * (1 - 2 * low); // ahead at the pad, behind in space
     const target = p
       .clone()
-      .addScaledVector(fwd, -dist)
-      .addScaledVector(out, dist * 0.45);
+      .addScaledVector(fwd, fwdOffset)
+      .addScaledVector(out, dist * (0.5 + 0.4 * low));
 
     const k = 1 - Math.exp(-3.2 * dt);
     smoothed.current.lerp(target, k);
-    look.current.lerp(p, k);
+    look.current.lerp(
+      p.clone().addScaledVector(fwd, 0.3 * (1 - low)).addScaledVector(out, -0.12 * low),
+      k
+    );
     camera.position.copy(smoothed.current);
     camera.lookAt(look.current);
   });
@@ -331,8 +361,8 @@ function CameraRig() {
       enableDamping
       dampingFactor={0.08}
       enablePan={false}
-      minDistance={8}
-      maxDistance={80}
+      minDistance={10.5}
+      maxDistance={90}
       target={[0, 0, 0]}
     />
   ) : null;
@@ -371,8 +401,10 @@ export default function Scene({ reducedMotion }) {
       style={{ position: "absolute", inset: 0 }}
     >
       <color attach="background" args={["#040508"]} />
-      <directionalLight position={[50, 20, 30]} intensity={2.4} />
-      <ambientLight intensity={0.35} />
+      <directionalLight position={[50, 20, 30]} intensity={2.2} />
+      {/* Hemisphere fill keeps the night side and backlit spacecraft readable. */}
+      <hemisphereLight args={["#4a5c80", "#10141f", 0.85]} />
+      <ambientLight intensity={0.18} />
       <ContextGuard />
       <Ticker />
       <Suspense fallback={null}>
