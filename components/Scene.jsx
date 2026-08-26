@@ -1,8 +1,8 @@
 "use client";
 
-import { useMemo, useRef } from "react";
+import { Suspense, useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
-import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import { Canvas, useFrame, useThree, useLoader } from "@react-three/fiber";
 import { Stars, OrbitControls } from "@react-three/drei";
 import { EffectComposer, Bloom } from "@react-three/postprocessing";
 import {
@@ -18,19 +18,19 @@ import { useMission } from "@/lib/store";
 
 /* ---------------------------------------------------------------- Earth -- */
 
-const EARTH_VERT = /* glsl */ `
+const OVERLAY_VERT = /* glsl */ `
   varying vec3 vNormal;
   varying vec3 vWorld;
   void main() {
     vNormal = normalize(normalMatrix * normal);
-    vec4 w = modelMatrix * vec4(position, 1.0);
     vWorld = normalize(position);
-    gl_Position = projectionMatrix * viewMatrix * w;
+    gl_Position = projectionMatrix * viewMatrix * modelMatrix * vec4(position, 1.0);
   }
 `;
 
-// Mission-control globe: near-black sphere, 15-degree graticule, blue rim.
-const EARTH_FRAG = /* glsl */ `
+// Faint 15-degree graticule over the texture, so the mission-control feel
+// survives the switch to real imagery.
+const GRID_FRAG = /* glsl */ `
   varying vec3 vNormal;
   varying vec3 vWorld;
 
@@ -42,19 +42,9 @@ const EARTH_FRAG = /* glsl */ `
   void main() {
     float lat = degrees(asin(clamp(vWorld.y, -1.0, 1.0)));
     float lon = degrees(atan(vWorld.z, vWorld.x));
-
-    float g = max(gridLine(lat, 15.0, 0.28), gridLine(lon, 15.0, 0.28));
-    // Fade the longitude pinch at the poles.
+    float g = max(gridLine(lat, 15.0, 0.30), gridLine(lon, 15.0, 0.30));
     g *= smoothstep(0.0, 0.12, 1.0 - abs(vWorld.y));
-
-    vec3 base = vec3(0.016, 0.024, 0.045);
-    vec3 grid = vec3(0.10, 0.16, 0.30);
-    // Soft key light so the sphere reads as a body, not a disc.
-    float lit = 0.45 + 0.55 * max(dot(vNormal, normalize(vec3(0.7, 0.35, 0.5))), 0.0);
-    float fres = pow(1.0 - max(dot(vNormal, vec3(0.0, 0.0, 1.0)), 0.0), 2.6);
-
-    vec3 color = (base + grid * g * 0.8) * lit + vec3(0.10, 0.22, 0.55) * fres * 0.8;
-    gl_FragColor = vec4(color, 1.0);
+    gl_FragColor = vec4(vec3(0.35, 0.55, 0.95), g * 0.16);
   }
 `;
 
@@ -62,21 +52,35 @@ const ATMO_FRAG = /* glsl */ `
   varying vec3 vNormal;
   void main() {
     float f = pow(1.0 - max(dot(vNormal, vec3(0.0, 0.0, 1.0)), 0.0), 3.2);
-    gl_FragColor = vec4(vec3(0.18, 0.38, 0.95), f * 0.55);
+    gl_FragColor = vec4(vec3(0.18, 0.38, 0.95), f * 0.5);
   }
 `;
 
 function Earth() {
+  const map = useLoader(THREE.TextureLoader, "/textures/earth.jpg");
+  map.colorSpace = THREE.SRGBColorSpace;
+  map.anisotropy = 4;
+
   return (
     <group>
       <mesh>
-        <sphereGeometry args={[EARTH_RADIUS_SCENE, 96, 96]} />
-        <shaderMaterial vertexShader={EARTH_VERT} fragmentShader={EARTH_FRAG} />
+        <sphereGeometry args={[EARTH_RADIUS_SCENE, 64, 64]} />
+        <meshStandardMaterial map={map} roughness={1} metalness={0} />
+      </mesh>
+      <mesh scale={1.002}>
+        <sphereGeometry args={[EARTH_RADIUS_SCENE, 48, 48]} />
+        <shaderMaterial
+          vertexShader={OVERLAY_VERT}
+          fragmentShader={GRID_FRAG}
+          transparent
+          depthWrite={false}
+          blending={THREE.AdditiveBlending}
+        />
       </mesh>
       <mesh scale={1.035}>
-        <sphereGeometry args={[EARTH_RADIUS_SCENE, 64, 64]} />
+        <sphereGeometry args={[EARTH_RADIUS_SCENE, 48, 48]} />
         <shaderMaterial
-          vertexShader={EARTH_VERT}
+          vertexShader={OVERLAY_VERT}
           fragmentShader={ATMO_FRAG}
           transparent
           side={THREE.BackSide}
@@ -85,6 +89,21 @@ function Earth() {
         />
       </mesh>
     </group>
+  );
+}
+
+/* ----------------------------------------------------------------- Moon -- */
+
+// Scenery for now (the EFT-1 profile never leaves Earth's neighborhood).
+// Distance is compressed; radius is true to scale with the Earth beside it.
+function Moon() {
+  const map = useLoader(THREE.TextureLoader, "/textures/moon.jpg");
+  map.colorSpace = THREE.SRGBColorSpace;
+  return (
+    <mesh position={[-70, 18, -55]} rotation={[0, Math.PI * 0.9, 0]}>
+      <sphereGeometry args={[1.737, 48, 48]} />
+      <meshStandardMaterial map={map} roughness={1} metalness={0} />
+    </mesh>
   );
 }
 
@@ -105,9 +124,7 @@ function colorFor(t) {
 }
 
 function Trajectory() {
-  const progressRef = useRef();
-
-  const { fullLine, progressGeom } = useMemo(() => {
+  const { fullLine, progressLine, progressGeom } = useMemo(() => {
     const positions = SAMPLES.pos;
     const colors = new Float32Array(SAMPLES.n * 3);
     for (let i = 0; i < SAMPLES.n; i++) {
@@ -119,40 +136,36 @@ function Trajectory() {
 
     const dimGeom = new THREE.BufferGeometry();
     dimGeom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-    const dimMat = new THREE.LineBasicMaterial({
-      color: "#41506b",
-      transparent: true,
-      opacity: 0.28,
-    });
-    const fullLine = new THREE.Line(dimGeom, dimMat);
+    const fullLine = new THREE.Line(
+      dimGeom,
+      new THREE.LineBasicMaterial({ color: "#41506b", transparent: true, opacity: 0.28 })
+    );
 
     const progressGeom = new THREE.BufferGeometry();
     progressGeom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
     progressGeom.setAttribute("color", new THREE.BufferAttribute(colors, 3));
     progressGeom.setDrawRange(0, 0);
-    return { fullLine, progressGeom };
+    const progressLine = new THREE.Line(
+      progressGeom,
+      new THREE.LineBasicMaterial({
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.95,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      })
+    );
+    return { fullLine, progressLine, progressGeom };
   }, []);
 
-  const progressLine = useMemo(() => {
-    const mat = new THREE.LineBasicMaterial({
-      vertexColors: true,
-      transparent: true,
-      opacity: 0.95,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-    });
-    return new THREE.Line(progressGeom, mat);
-  }, [progressGeom]);
-
   useFrame(() => {
-    const met = useMission.getState().met;
-    progressGeom.setDrawRange(0, sampleIndex(met) + 1);
+    progressGeom.setDrawRange(0, sampleIndex(useMission.getState().met) + 1);
   });
 
   return (
     <group>
       <primitive object={fullLine} />
-      <primitive object={progressLine} ref={progressRef} />
+      <primitive object={progressLine} />
     </group>
   );
 }
@@ -173,17 +186,75 @@ function makeGlowTexture() {
   return new THREE.CanvasTexture(canvas);
 }
 
+/**
+ * Stylized Orion stack, built from primitives so it costs nothing to load:
+ * blunt crew-module cone, cylindrical ESA service module, and the four
+ * solar-array wings in their X configuration. Model +X is the flight
+ * direction. Deliberately oversized — a to-scale capsule would be
+ * sub-pixel; the HUD note already says the replay is simplified.
+ */
+function OrionModel() {
+  return (
+    <group>
+      {/* Crew module: blunt cone, tip forward. */}
+      <mesh position={[0.012, 0, 0]} rotation={[0, 0, -Math.PI / 2]}>
+        <coneGeometry args={[0.0135, 0.015, 24]} />
+        <meshStandardMaterial color="#dfe2e8" metalness={0.5} roughness={0.35} />
+      </mesh>
+      {/* Heat shield disc between CM and SM. */}
+      <mesh position={[0.0038, 0, 0]} rotation={[0, 0, Math.PI / 2]}>
+        <cylinderGeometry args={[0.0138, 0.0138, 0.0015, 24]} />
+        <meshStandardMaterial color="#7a5c48" metalness={0.2} roughness={0.7} />
+      </mesh>
+      {/* Service module. */}
+      <mesh position={[-0.006, 0, 0]} rotation={[0, 0, Math.PI / 2]}>
+        <cylinderGeometry args={[0.0128, 0.0128, 0.018, 24]} />
+        <meshStandardMaterial color="#9aa1ab" metalness={0.6} roughness={0.4} />
+      </mesh>
+      {/* Four solar-array wings, X configuration, canted back. */}
+      {[45, 135, 225, 315].map((a) => (
+        <group key={a} position={[-0.01, 0, 0]} rotation={[THREE.MathUtils.degToRad(a), 0, 0]}>
+          <mesh position={[-0.006, 0.026, 0]} rotation={[0, 0, THREE.MathUtils.degToRad(-14)]}>
+            <boxGeometry args={[0.0062, 0.036, 0.001]} />
+            <meshStandardMaterial
+              color="#16294d"
+              metalness={0.35}
+              roughness={0.45}
+              emissive="#0a1a3a"
+              emissiveIntensity={0.35}
+            />
+          </mesh>
+        </group>
+      ))}
+    </group>
+  );
+}
+
 function Capsule() {
   const group = useRef();
+  const model = useRef();
   const plasma = useRef();
   const glowTex = useMemo(makeGlowTexture, []);
+  const xAxis = useMemo(() => new THREE.Vector3(1, 0, 0), []);
+  const fwd = useMemo(() => new THREE.Vector3(), []);
+  const quat = useMemo(() => new THREE.Quaternion(), []);
 
   useFrame(() => {
     const met = useMission.getState().met;
     const s = stateAt(met);
     if (group.current) group.current.position.set(s.x, s.y, s.z);
+
+    // Point the stack along the velocity vector.
+    if (model.current) {
+      const prev = stateAt(met - 8);
+      fwd.set(s.x - prev.x, s.y - prev.y, s.z - prev.z);
+      if (fwd.lengthSq() < 1e-10) fwd.set(-s.z, 0, s.x); // pad fallback: local east
+      fwd.normalize();
+      quat.setFromUnitVectors(xAxis, fwd);
+      model.current.quaternion.slerp(quat, 0.25);
+    }
+
     if (plasma.current) {
-      // Plasma only during entry: low altitude, high speed.
       const active = s.alt < 135 && s.speed > 1.2 && met > tEntry - 30;
       const k = active ? Math.min(1, s.g / 8.2) : 0;
       plasma.current.material.opacity = k * 0.9;
@@ -194,16 +265,15 @@ function Capsule() {
 
   return (
     <group ref={group}>
-      <mesh>
-        <octahedronGeometry args={[0.02, 0]} />
-        <meshBasicMaterial color="#ffffff" toneMapped={false} />
-      </mesh>
-      <sprite scale={[0.09, 0.09, 1]}>
+      <group ref={model}>
+        <OrionModel />
+      </group>
+      <sprite scale={[0.05, 0.05, 1]}>
         <spriteMaterial
           map={glowTex}
           color="#cfe0ff"
           transparent
-          opacity={0.85}
+          opacity={0.6}
           blending={THREE.AdditiveBlending}
           depthWrite={false}
         />
@@ -236,14 +306,12 @@ function CameraRig() {
     const s = stateAt(met);
     const p = new THREE.Vector3(s.x, s.y, s.z);
 
-    // Forward from a finite difference; falls back to local east on the pad.
     const prev = stateAt(met - 8);
     const fwd = new THREE.Vector3(s.x - prev.x, s.y - prev.y, s.z - prev.z);
     if (fwd.lengthSq() < 1e-9) fwd.set(-p.z, 0, p.x);
     fwd.normalize();
 
     const out = p.clone().normalize();
-    // Pull back farther as the ship climbs; stay tight near the ground.
     const dist = 0.55 + (s.alt / 5800) * 3.4;
     const target = p
       .clone()
@@ -260,9 +328,11 @@ function CameraRig() {
   return camMode === "orbit" ? (
     <OrbitControls
       makeDefault
+      enableDamping
+      dampingFactor={0.08}
       enablePan={false}
-      minDistance={7.5}
-      maxDistance={60}
+      minDistance={8}
+      maxDistance={80}
       target={[0, 0, 0]}
     />
   ) : null;
@@ -276,24 +346,46 @@ function Ticker() {
   return null;
 }
 
+// A lost WebGL context leaves a permanently black canvas; reloading is the
+// bluntest but most reliable recovery on low-end GPUs.
+function ContextGuard() {
+  const { gl } = useThree();
+  useEffect(() => {
+    const el = gl.domElement;
+    const onLost = (e) => {
+      e.preventDefault();
+      setTimeout(() => window.location.reload(), 400);
+    };
+    el.addEventListener("webglcontextlost", onLost);
+    return () => el.removeEventListener("webglcontextlost", onLost);
+  }, [gl]);
+  return null;
+}
+
 export default function Scene({ reducedMotion }) {
   return (
     <Canvas
-      dpr={[1, 1.75]}
-      camera={{ position: [0, 3, 16], fov: 42, near: 0.01, far: 300 }}
+      dpr={[1, 1.5]}
+      camera={{ position: [0, 3, 16], fov: 42, near: 0.01, far: 400 }}
       gl={{ antialias: true }}
       style={{ position: "absolute", inset: 0 }}
     >
       <color attach="background" args={["#040508"]} />
+      <directionalLight position={[50, 20, 30]} intensity={2.4} />
+      <ambientLight intensity={0.35} />
+      <ContextGuard />
       <Ticker />
-      <Earth />
+      <Suspense fallback={null}>
+        <Earth />
+        <Moon />
+      </Suspense>
       <Trajectory />
       <Capsule />
       <CameraRig />
-      <Stars radius={90} depth={40} count={4000} factor={3.2} saturation={0} fade speed={0} />
+      <Stars radius={120} depth={50} count={2500} factor={3.2} saturation={0} fade speed={0} />
       {!reducedMotion && (
-        <EffectComposer>
-          <Bloom mipmapBlur intensity={1.05} luminanceThreshold={0.16} luminanceSmoothing={0.35} />
+        <EffectComposer multisampling={0}>
+          <Bloom mipmapBlur intensity={0.85} luminanceThreshold={0.2} luminanceSmoothing={0.35} />
         </EffectComposer>
       )}
     </Canvas>

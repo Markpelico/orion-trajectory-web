@@ -425,6 +425,8 @@ body {
   inset: 0 auto 0 0;
   background: var(--ink);
   box-shadow: 0 0 12px rgba(237, 237, 242, 0.5);
+  /* The fill updates at 10 Hz; a short linear transition keeps it gliding. */
+  transition: width 0.12s linear;
 }
 
 .hud-scrub-tick {

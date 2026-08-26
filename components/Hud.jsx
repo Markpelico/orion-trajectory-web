@@ -14,6 +14,35 @@ import { useMission } from "@/lib/store";
 
 const SPAN = T_END - T_START;
 
+/**
+ * The mission clock updates every animation frame, but re-rendering the whole
+ * HUD at 60 fps starves the GPU thread on weak machines. 10 Hz is
+ * indistinguishable for text, and a trailing update guarantees the final
+ * value lands after a pause or seek.
+ */
+function useThrottledMet(ms = 100) {
+  const [met, setMet] = useState(() => useMission.getState().met);
+  useEffect(() => {
+    let last = 0;
+    let timer = null;
+    const apply = () => {
+      last = performance.now();
+      timer = null;
+      setMet(useMission.getState().met);
+    };
+    const unsub = useMission.subscribe(() => {
+      const now = performance.now();
+      if (now - last >= ms) apply();
+      else if (!timer) timer = setTimeout(apply, ms - (now - last));
+    });
+    return () => {
+      unsub();
+      if (timer) clearTimeout(timer);
+    };
+  }, [ms]);
+  return met;
+}
+
 /* ------------------------------------------------------------- Top bar -- */
 
 function TopBar({ met }) {
@@ -342,7 +371,7 @@ function Complete() {
 /* ---------------------------------------------------------------- Root -- */
 
 export default function Hud({ reducedMotion }) {
-  const met = useMission((s) => s.met);
+  const met = useThrottledMet(100);
   const s = stateAt(met);
   const phaseIdx = phaseIndexAt(met);
 
