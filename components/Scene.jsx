@@ -49,11 +49,14 @@ const GRID_FRAG = /* glsl */ `
   }
 `;
 
+// Thin limb: high exponent confines the glow to grazing angles, so the
+// atmosphere reads as a gradient shell instead of a solid blue ring.
 const ATMO_FRAG = /* glsl */ `
   varying vec3 vNormal;
   void main() {
-    float f = pow(1.0 - max(dot(vNormal, vec3(0.0, 0.0, 1.0)), 0.0), 3.2);
-    gl_FragColor = vec4(vec3(0.18, 0.38, 0.95), f * 0.5);
+    float d = 1.0 - max(dot(vNormal, vec3(0.0, 0.0, 1.0)), 0.0);
+    float f = pow(d, 4.5);
+    gl_FragColor = vec4(vec3(0.22, 0.45, 1.0), f * 0.65);
   }
 `;
 
@@ -78,7 +81,7 @@ function Earth() {
           blending={THREE.AdditiveBlending}
         />
       </mesh>
-      <mesh scale={1.035}>
+      <mesh scale={1.022}>
         <sphereGeometry args={[EARTH_RADIUS_SCENE, 48, 48]} />
         <shaderMaterial
           vertexShader={OVERLAY_VERT}

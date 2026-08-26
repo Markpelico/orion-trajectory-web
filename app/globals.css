@@ -157,6 +157,24 @@ body {
   gap: 10px;
   color: var(--faint);
   transition: color 0.4s ease;
+  /* Rail entries are buttons: jump the mission clock to that phase. */
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 2px 0;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+.hud-rail-item:hover {
+  color: var(--ink);
+}
+
+.hud-rail-item:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 3px;
 }
 
 .hud-rail-item.is-past {

@@ -75,17 +75,22 @@ function TopBar({ met }) {
 /* ---------------------------------------------------------- Phase rail -- */
 
 const PhaseRail = memo(function PhaseRail({ phaseIdx }) {
+  const seek = useMission((s) => s.seek);
   return (
     <ol className="hud-rail" aria-label="Mission phases">
       {PHASES.map((p, i) => (
-        <li
-          key={p.name}
-          className={
-            i === phaseIdx ? "hud-rail-item is-active" : i < phaseIdx ? "hud-rail-item is-past" : "hud-rail-item"
-          }
-        >
-          <span className="hud-rail-tick" aria-hidden="true" />
-          {p.short}
+        <li key={p.name}>
+          <button
+            type="button"
+            className={
+              i === phaseIdx ? "hud-rail-item is-active" : i < phaseIdx ? "hud-rail-item is-past" : "hud-rail-item"
+            }
+            onClick={() => seek(p.t + 0.01)}
+            title={`Jump to ${p.name}`}
+          >
+            <span className="hud-rail-tick" aria-hidden="true" />
+            {p.short}
+          </button>
         </li>
       ))}
     </ol>
@@ -386,8 +391,9 @@ export default function Hud({ reducedMotion }) {
         <Controls />
         <Scrubber met={met} />
         <p className="hud-note">
-          Replay of a simplified EFT-1 profile from computed state vectors. The desktop
-          version streams live telemetry from a NASA Trick variable server.
+          During my NASA internship at Johnson Space Center I built the desktop version of
+          this display, streaming live telemetry from a Trick variable server. This web
+          replay flies a simplified EFT-1 profile from computed state vectors.
         </p>
       </div>
       <Complete />

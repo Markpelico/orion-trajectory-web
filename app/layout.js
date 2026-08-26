@@ -23,6 +23,14 @@ export const metadata = {
     description:
       "Launch to splashdown in your browser. Web console for a NASA Trick trajectory tool.",
     type: "website",
+    images: [{ url: "/og.png", width: 1200, height: 630 }],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Orion Trajectory Display",
+    description:
+      "Launch to splashdown in your browser. Web console for a NASA Trick trajectory tool.",
+    images: ["/og.png"],
   },
 };
 
