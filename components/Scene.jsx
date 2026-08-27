@@ -132,11 +132,15 @@ function Earth() {
           [
             "#include <emissivemap_fragment>",
             "float sunDot = dot(normalize(vEarthNormal), uSunDir);",
-            "float nightK = smoothstep(0.09, -0.18, sunDot);",
+            "float nightK = smoothstep(0.02, -0.14, sunDot);",
             "vec3 nightLights = texture2D(uNightMap, vMapUv).rgb;",
             "totalEmissiveRadiance += nightLights * nightK * 1.3;",
-            "float termK = 1.0 - smoothstep(0.0, 0.24, abs(sunDot));",
-            "totalEmissiveRadiance += vec3(1.0, 0.38, 0.12) * termK * termK * 0.05;",
+            // Narrow warm rim hugging the lit edge of the terminator. Keep it
+            // tight: with the camera near the terminator (the dusk launch),
+            // sunDot varies slowly across the disc and any generous band
+            // veils half the planet in rust.
+            "float termK = 1.0 - smoothstep(0.0, 0.045, abs(sunDot - 0.015));",
+            "totalEmissiveRadiance += vec3(1.0, 0.36, 0.10) * termK * termK * 0.028;",
           ].join("\n")
         );
     };
