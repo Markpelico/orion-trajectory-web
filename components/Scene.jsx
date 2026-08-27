@@ -4,7 +4,9 @@ import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { Canvas, useFrame, useThree, useLoader } from "@react-three/fiber";
 import { Stars, OrbitControls } from "@react-three/drei";
-import { EffectComposer, Bloom } from "@react-three/postprocessing";
+import { EffectComposer, Bloom, ToneMapping, Vignette } from "@react-three/postprocessing";
+import { ToneMappingMode } from "postprocessing";
+import { Line2, LineGeometry, LineMaterial } from "three-stdlib";
 import {
   SAMPLES,
   stateAt,
@@ -19,6 +21,12 @@ import {
   EV,
 } from "@/lib/mission";
 import { useMission, autoWarp } from "@/lib/store";
+
+/** Current effective warp — the finite-difference dt for attitude and camera
+ *  work scales with it so direction vectors stay clean at every speed. */
+function currentWarp(st) {
+  return st.warp === "auto" ? autoWarp(st.met) : st.warp;
+}
 
 /* ---------------------------------------------------------------- Earth -- */
 
@@ -189,10 +197,19 @@ function colorFor(t) {
   return PHASE_COLORS.entry;
 }
 
+/**
+ * Fat lines (Line2): the trajectory is the hero element, and 1px GL lines
+ * vanish in thumbnails. Both lines share one position table; the progress
+ * line adds per-phase vertex colors and reveals itself by capping
+ * geometry.instanceCount (one instance per segment — the fat-line analogue
+ * of setDrawRange, O(1) per frame at 1,721 points).
+ */
 function Trajectory() {
-  const { fullLine, progressLine, progressGeom } = useMemo(() => {
-    const positions = SAMPLES.pos;
-    const colors = new Float32Array(SAMPLES.n * 3);
+  const size = useThree((s) => s.size);
+
+  const { fullLine, progressLine, fullMat, progMat } = useMemo(() => {
+    const positions = Array.from(SAMPLES.pos);
+    const colors = new Array(SAMPLES.n * 3);
     for (let i = 0; i < SAMPLES.n; i++) {
       const c = colorFor(SAMPLES.ts[i]);
       colors[i * 3] = c.r;
@@ -200,32 +217,48 @@ function Trajectory() {
       colors[i * 3 + 2] = c.b;
     }
 
-    const dimGeom = new THREE.BufferGeometry();
-    dimGeom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-    const fullLine = new THREE.Line(
-      dimGeom,
-      new THREE.LineBasicMaterial({ color: "#5c7099", transparent: true, opacity: 0.4 })
-    );
+    const fullGeom = new LineGeometry();
+    fullGeom.setPositions(positions);
+    const fullMat = new LineMaterial({
+      color: 0x5c7099,
+      linewidth: 1.5,
+      transparent: true,
+      opacity: 0.33,
+      depthWrite: false,
+    });
+    const fullLine = new Line2(fullGeom, fullMat);
+    fullLine.frustumCulled = false;
 
-    const progressGeom = new THREE.BufferGeometry();
-    progressGeom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-    progressGeom.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-    progressGeom.setDrawRange(0, 0);
-    const progressLine = new THREE.Line(
-      progressGeom,
-      new THREE.LineBasicMaterial({
-        vertexColors: true,
-        transparent: true,
-        opacity: 0.95,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-      })
-    );
-    return { fullLine, progressLine, progressGeom };
+    const progGeom = new LineGeometry();
+    progGeom.setPositions(positions);
+    progGeom.setColors(colors);
+    progGeom.instanceCount = 0;
+    const progMat = new LineMaterial({
+      vertexColors: true,
+      linewidth: 2.75,
+      transparent: true,
+      opacity: 0.95,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    const progressLine = new Line2(progGeom, progMat);
+    progressLine.frustumCulled = false;
+
+    return { fullLine, progressLine, fullMat, progMat };
   }, []);
 
+  // LineMaterial resolves width in screen space and must know the viewport.
+  useEffect(() => {
+    fullMat.resolution.set(size.width, size.height);
+    progMat.resolution.set(size.width, size.height);
+  }, [size, fullMat, progMat]);
+
   useFrame(() => {
-    progressGeom.setDrawRange(0, sampleIndex(useMission.getState().met) + 1);
+    // sampleIndex(met) segments are fully in the past — draw exactly those.
+    progressLine.geometry.instanceCount = Math.min(
+      sampleIndex(useMission.getState().met),
+      SAMPLES.n - 1
+    );
   });
 
   return (
@@ -259,39 +292,42 @@ function makeGlowTexture() {
  * direction. Deliberately oversized — a to-scale capsule would be
  * sub-pixel; the HUD note already says the replay is simplified.
  */
-function OrionModel() {
+function OrionModel({ smRef }) {
   return (
     <group>
-      {/* Crew module: blunt cone, tip forward. */}
+      {/* Crew module: blunt cone, tip forward (+X); heat shield at its base. */}
       <mesh position={[0.012, 0, 0]} rotation={[0, 0, -Math.PI / 2]}>
         <coneGeometry args={[0.0135, 0.015, 24]} />
         <meshStandardMaterial color="#dfe2e8" metalness={0.5} roughness={0.35} />
       </mesh>
-      {/* Heat shield disc between CM and SM. */}
+      {/* Heat shield disc — stays with the CM through entry. */}
       <mesh position={[0.0038, 0, 0]} rotation={[0, 0, Math.PI / 2]}>
         <cylinderGeometry args={[0.0138, 0.0138, 0.0015, 24]} />
         <meshStandardMaterial color="#7a5c48" metalness={0.2} roughness={0.7} />
       </mesh>
-      {/* Service module. */}
-      <mesh position={[-0.006, 0, 0]} rotation={[0, 0, Math.PI / 2]}>
-        <cylinderGeometry args={[0.0128, 0.0128, 0.018, 24]} />
-        <meshStandardMaterial color="#9aa1ab" metalness={0.6} roughness={0.4} />
-      </mesh>
-      {/* Four solar-array wings, X configuration, canted back. */}
-      {[45, 135, 225, 315].map((a) => (
-        <group key={a} position={[-0.01, 0, 0]} rotation={[THREE.MathUtils.degToRad(a), 0, 0]}>
-          <mesh position={[-0.006, 0.022, 0]} rotation={[0, 0, THREE.MathUtils.degToRad(-18)]}>
-            <boxGeometry args={[0.0048, 0.028, 0.0008]} />
-            <meshStandardMaterial
-              color="#2a4a85"
-              metalness={0.4}
-              roughness={0.35}
-              emissive="#16294d"
-              emissiveIntensity={0.5}
-            />
-          </mesh>
-        </group>
-      ))}
+      {/* Service module + wings — jettisoned at CM/SM sep, so they can be
+          hidden without touching the crew module. */}
+      <group ref={smRef}>
+        <mesh position={[-0.006, 0, 0]} rotation={[0, 0, Math.PI / 2]}>
+          <cylinderGeometry args={[0.0128, 0.0128, 0.018, 24]} />
+          <meshStandardMaterial color="#9aa1ab" metalness={0.6} roughness={0.4} />
+        </mesh>
+        {/* Four solar-array wings, X configuration, canted back. */}
+        {[45, 135, 225, 315].map((a) => (
+          <group key={a} position={[-0.01, 0, 0]} rotation={[THREE.MathUtils.degToRad(a), 0, 0]}>
+            <mesh position={[-0.006, 0.022, 0]} rotation={[0, 0, THREE.MathUtils.degToRad(-18)]}>
+              <boxGeometry args={[0.0048, 0.028, 0.0008]} />
+              <meshStandardMaterial
+                color="#2a4a85"
+                metalness={0.4}
+                roughness={0.35}
+                emissive="#16294d"
+                emissiveIntensity={0.5}
+              />
+            </mesh>
+          </group>
+        ))}
+      </group>
     </group>
   );
 }
@@ -299,27 +335,56 @@ function OrionModel() {
 function Capsule() {
   const group = useRef();
   const model = useRef();
+  const sm = useRef();
   const plasma = useRef();
   const glow = useRef();
   const glowTex = useMemo(makeGlowTexture, []);
   const xAxis = useMemo(() => new THREE.Vector3(1, 0, 0), []);
   const fwd = useMemo(() => new THREE.Vector3(), []);
+  const up = useMemo(() => new THREE.Vector3(), []);
+  const pitchAxis = useMemo(() => new THREE.Vector3(), []);
   const quat = useMemo(() => new THREE.Quaternion(), []);
+  const flipQuat = useMemo(() => new THREE.Quaternion(), []);
 
-  useFrame(({ camera }) => {
-    const met = useMission.getState().met;
+  useFrame(({ camera }, dt) => {
+    const st = useMission.getState();
+    const met = st.met;
     const s = stateAt(met);
     if (group.current) group.current.position.set(s.x, s.y, s.z);
 
     // Point the stack along the velocity vector, and grow it gently with
     // camera distance so it still reads as a vehicle at translunar range.
     if (model.current) {
-      const prev = stateAt(met - 8);
+      // Finite-difference forward vector. The lookback scales with warp so it
+      // stays small against the per-frame time step: at 1x during ascent a
+      // 1-second dt tracks the pitch-over, at 32,000x a 60-second dt is still
+      // a sliver of the frame's own ~500 s advance.
+      const dts = THREE.MathUtils.clamp(currentWarp(st) * 0.5, 1, 60);
+      const prev = stateAt(met - dts);
       fwd.set(s.x - prev.x, s.y - prev.y, s.z - prev.z);
       if (fwd.lengthSq() < 1e-10) fwd.set(-s.z, 0, s.x); // pad fallback: local east
       fwd.normalize();
       quat.setFromUnitVectors(xAxis, fwd);
-      model.current.quaternion.slerp(quat, 0.25);
+
+      // Entry attitude: the real capsule flies blunt-end-first. Across the
+      // CM/SM sep -> entry-interface window, pitch 180 degrees about the
+      // local horizontal so the heat shield leads through the plasma.
+      const flipK = THREE.MathUtils.smoothstep(met, EV.CMSM_SEP, EV.ENTRY);
+      if (flipK > 0) {
+        up.set(s.x, s.y, s.z).normalize();
+        pitchAxis.crossVectors(fwd, up);
+        if (pitchAxis.lengthSq() < 1e-8) pitchAxis.set(0, 1, 0);
+        pitchAxis.normalize();
+        flipQuat.setFromAxisAngle(pitchAxis, Math.PI * flipK);
+        quat.premultiply(flipQuat);
+      }
+
+      // Frame-rate-aware damping: warp changes and rail seeks glide the
+      // attitude around in ~half a second instead of snapping it.
+      model.current.quaternion.slerp(quat, 1 - Math.exp(-6.5 * dt));
+
+      // SM + wings are gone after separation; the bare CM rides to splash.
+      if (sm.current) sm.current.visible = met < EV.CMSM_SEP;
 
       const camDist = camera.position.distanceTo(group.current.position);
       // Extra presence near the Moon so the money shot has a vehicle in it.
@@ -344,7 +409,7 @@ function Capsule() {
   return (
     <group ref={group}>
       <group ref={model} scale={0.7}>
-        <OrionModel />
+        <OrionModel smRef={sm} />
       </group>
       <sprite ref={glow} scale={[0.032, 0.032, 1]}>
         <spriteMaterial
@@ -546,7 +611,10 @@ export default function Scene({ reducedMotion }) {
     <Canvas
       dpr={[1, 1.5]}
       camera={{ position: [0, 3, 16], fov: 42, near: 0.05, far: 3000 }}
-      gl={{ antialias: true }}
+      // ACES here covers the reduced-motion path (no composer). With the
+      // composer active the renderer is forced to NoToneMapping and the
+      // <ToneMapping> effect below takes over.
+      gl={{ antialias: true, toneMapping: THREE.ACESFilmicToneMapping }}
       style={{ position: "absolute", inset: 0 }}
     >
       <color attach="background" args={["#040508"]} />
@@ -578,7 +646,12 @@ export default function Scene({ reducedMotion }) {
       <Stars radius={1200} depth={120} count={3000} factor={12} saturation={0} fade speed={0} />
       {!reducedMotion && (
         <EffectComposer multisampling={0}>
-          <Bloom mipmapBlur intensity={0.85} luminanceThreshold={0.2} luminanceSmoothing={0.35} />
+          {/* Bloom gathers in scene-referred light, then ACES compresses it,
+              then the vignette shapes the display-referred frame. Intensity
+              re-tuned up from 0.85: ACES pulls the highlights down. */}
+          <Bloom mipmapBlur intensity={1.15} luminanceThreshold={0.18} luminanceSmoothing={0.35} />
+          <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
+          <Vignette eskil={false} offset={0.24} darkness={0.55} />
         </EffectComposer>
       )}
     </Canvas>
