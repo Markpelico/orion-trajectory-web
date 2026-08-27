@@ -395,6 +395,8 @@ async function main() {
   if (entry[entry.length - 1].t < EV.SPLASH) {
     entry.push({ t: EV.SPLASH, arc: earc, alt: 0, speed: 0, g: 1 });
   }
+  // Bobbing in the Pacific: hold through T_END = splash + 10 s.
+  entry.push({ t: EV.SPLASH + 10, arc: earc, alt: 0, speed: 0, g: 1 });
   for (const s of entry) {
     const dir = add(mul(rHatEI, Math.cos(s.arc)), mul(tHatEI, Math.sin(s.arc)));
     s.r = mul(dir, R + s.alt);

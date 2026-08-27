@@ -146,9 +146,17 @@ body {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 9px;
+  gap: 6px; /* 19 real mission phases have to fit the left edge */
   font-size: 10px;
   letter-spacing: 0.16em;
+}
+
+/* Short viewports: let the rail shrink instead of colliding with the HUD. */
+@media (max-height: 720px) {
+  .hud-rail {
+    gap: 3px;
+    font-size: 9px;
+  }
 }
 
 .hud-rail-item {

@@ -4,13 +4,14 @@ import { motion, AnimatePresence } from "motion/react";
 import { useMission } from "@/lib/store";
 
 const LINES = [
-  "ORION MULTI-PURPOSE CREW VEHICLE",
-  "TRAJECTORY DISPLAY // WEB CONSOLE",
+  "ORION CREW VEHICLE “INTEGRITY” // TRAJECTORY DISPLAY",
+  "MISSION ........... ARTEMIS II — CREWED LUNAR FREE-RETURN",
+  "CREW .............. WISEMAN · GLOVER · KOCH · HANSEN",
+  "FLOWN ............. 2026 APR 01 22:35 UTC → APR 11 00:07 UTC",
+  "DATA SOURCE ....... JPL HORIZONS EPHEMERIS (SPACECRAFT -1024)",
+  "RECONSTRUCTED ..... ASCENT + ENTRY, FROM PUBLISHED EVENTS",
   "HERITAGE .......... NASA JSC INTERNSHIP TOOLING",
-  "REPLAY PROFILE .... EFT-1 (SIMPLIFIED)",
-  "DATA SOURCE ....... COMPUTED STATE VECTORS",
-  "TRICK LINK ........ OFFLINE — SEE DESKTOP VERSION",
-  "ALL SYSTEMS ....... GO",
+  "ALL SYSTEMS ....... GO FOR REPLAY",
 ];
 
 export default function Boot() {
@@ -51,7 +52,7 @@ export default function Boot() {
               animate={{ opacity: 1, letterSpacing: "0.18em", filter: "blur(0px)" }}
               transition={{ delay: 2.2, duration: 1.0, ease: [0.19, 1, 0.22, 1] }}
             >
-              ORION
+              ARTEMIS II
             </motion.h1>
 
             <motion.button

@@ -6,9 +6,13 @@ import {
   PHASES,
   T_START,
   T_END,
+  EV,
+  STATS,
+  ENTRY_PHASE_IDX,
   stateAt,
   phaseIndexAt,
   formatMET,
+  formatKm,
 } from "@/lib/mission";
 import { useMission } from "@/lib/store";
 
@@ -50,7 +54,7 @@ function TopBar({ met }) {
     <header className="hud-top">
       <div className="hud-id">
         <span className="hud-id-main">ORION · TRAJECTORY DISPLAY</span>
-        <span className="hud-id-sub">EFT-1 REPLAY // SIMPLIFIED PROFILE</span>
+        <span className="hud-id-sub">ARTEMIS II REPLAY // JPL HORIZONS EPHEMERIS</span>
       </div>
       <div className="hud-clock" aria-label="Mission elapsed time">
         {formatMET(met)}
@@ -110,7 +114,7 @@ const PhaseSlam = memo(function PhaseSlam({ phaseIdx, reducedMotion }) {
   }, [phaseIdx]);
 
   const phase = shown != null ? PHASES[shown] : null;
-  const isEntry = shown != null && shown >= 8;
+  const isEntry = shown != null && shown >= ENTRY_PHASE_IDX;
 
   return (
     <div className="hud-slam" aria-live="polite">
@@ -186,7 +190,7 @@ function Spark({ history, accent }) {
 function Telemetry({ s }) {
   // Rolling history, pushed at ~5 Hz wall clock — the web echo of the
   // desktop tool's rolling matplotlib panels.
-  const hist = useRef({ alt: [], speed: [], g: [], last: 0 });
+  const hist = useRef({ alt: [], speed: [], moon: [], g: [], last: 0 });
   const now = performance.now();
   if (now - hist.current.last > 200) {
     hist.current.last = now;
@@ -196,14 +200,28 @@ function Telemetry({ s }) {
     };
     push(hist.current.alt, s.alt);
     push(hist.current.speed, s.speed);
+    push(hist.current.moon, s.rangeMoon);
     push(hist.current.g, s.g);
   }
 
   const cards = [
-    { label: "ALTITUDE", value: s.alt >= 1000 ? Math.round(s.alt).toLocaleString() : s.alt.toFixed(1), unit: "KM", hist: hist.current.alt },
+    {
+      // The same number wears two hats: pad-to-orbit it reads as altitude,
+      // in translunar space as distance from Earth's surface.
+      label: s.alt >= 10000 ? "EARTH RANGE" : "ALTITUDE",
+      value: s.alt >= 1000 ? formatKm(s.alt).toLocaleString() : s.alt.toFixed(1),
+      unit: "KM",
+      hist: hist.current.alt,
+    },
     { label: "VELOCITY", value: s.speed.toFixed(2), unit: "KM/S", hist: hist.current.speed },
-    { label: "DOWNRANGE", value: Math.round(s.downrange).toLocaleString(), unit: "KM", hist: null },
-    { label: "G-LOAD", value: s.g.toFixed(1), unit: "G", hist: hist.current.g, accent: s.g > 4 },
+    {
+      label: "MOON RANGE",
+      value: formatKm(s.rangeMoon).toLocaleString(),
+      unit: "KM",
+      hist: hist.current.moon,
+      accent: s.rangeMoon < 20000,
+    },
+    { label: "G-LOAD", value: s.g.toFixed(1), unit: "G", hist: hist.current.g, accent: s.g > 3 },
   ];
 
   return (
@@ -224,7 +242,10 @@ function Telemetry({ s }) {
 
 /* ------------------------------------------------------------ Controls -- */
 
-const WARPS = ["auto", 1, 10, 60, 300];
+// Manual presets sized for a nine-day mission: 25,000x runs a coast day in
+// about 3.5 seconds.
+const WARPS = ["auto", 1, 60, 1000, 25000];
+const warpLabel = (w) => (w === "auto" ? "AUTO" : w >= 1000 ? `${w / 1000}K×` : `${w}×`);
 
 function Controls() {
   const warp = useMission((s) => s.warp);
@@ -247,7 +268,7 @@ function Controls() {
             className={warp === w ? "hud-btn is-on" : "hud-btn"}
             onClick={() => setWarp(w)}
           >
-            {w === "auto" ? "AUTO" : `${w}×`}
+            {warpLabel(w)}
           </button>
         ))}
       </div>
@@ -342,16 +363,20 @@ function Complete() {
           </motion.h2>
           <div className="hud-complete-stats">
             <div>
-              <span>PEAK ALTITUDE</span>
-              <strong>5,800 KM</strong>
+              <span>LUNAR FLYBY</span>
+              <strong>{STATS.flybyAltKm.toLocaleString()} KM</strong>
+            </div>
+            <div>
+              <span>MAX EARTH DISTANCE</span>
+              <strong>{STATS.maxEarthKm.toLocaleString()} KM</strong>
             </div>
             <div>
               <span>ENTRY VELOCITY</span>
-              <strong>9.1 KM/S</strong>
+              <strong>{STATS.entrySpeedKms.toFixed(1)} KM/S</strong>
             </div>
             <div>
               <span>MISSION TIME</span>
-              <strong>{formatMET(T_END - 10).slice(3)}</strong>
+              <strong>{formatMET(EV.SPLASH).slice(3)}</strong>
             </div>
           </div>
           <div className="hud-complete-actions">
@@ -393,7 +418,9 @@ export default function Hud({ reducedMotion }) {
         <p className="hud-note">
           During my NASA internship at Johnson Space Center I built the desktop version of
           this display, streaming live telemetry from a Trick variable server. This web
-          replay flies a simplified EFT-1 profile from computed state vectors.
+          replay flies the April 2026 Artemis II mission from the JPL Horizons ephemeris
+          of Orion (spacecraft −1024); ascent and the final entry minutes are
+          reconstructed from published mission events. Not live or official telemetry.
         </p>
       </div>
       <Complete />

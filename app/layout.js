@@ -14,22 +14,22 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata = {
-  title: "Orion Trajectory Display",
+  title: "Orion Trajectory Display — Artemis II",
   description:
-    "Interactive replay of an EFT-1-style Orion mission: launch, 5,800 km apogee, 8.9 km/s reentry. Web console for the NASA Trick desktop tool.",
+    "Replay the real Artemis II mission from the JPL Horizons ephemeris: launch, translunar injection, a 6,545 km lunar flyby, and an 11 km/s Pacific reentry.",
   metadataBase: new URL("https://orion.markpelico.com"),
   openGraph: {
-    title: "Orion Trajectory Display",
+    title: "Orion Trajectory Display — Artemis II",
     description:
-      "Launch to splashdown in your browser. Web console for a NASA Trick trajectory tool.",
+      "Launch to lunar flyby to splashdown in your browser, from the real Artemis II ephemeris.",
     type: "website",
     images: [{ url: "/og.png", width: 1200, height: 630 }],
   },
   twitter: {
     card: "summary_large_image",
-    title: "Orion Trajectory Display",
+    title: "Orion Trajectory Display — Artemis II",
     description:
-      "Launch to splashdown in your browser. Web console for a NASA Trick trajectory tool.",
+      "Launch to lunar flyby to splashdown in your browser, from the real Artemis II ephemeris.",
     images: ["/og.png"],
   },
 };

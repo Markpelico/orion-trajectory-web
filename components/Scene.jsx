@@ -9,12 +9,15 @@ import {
   SAMPLES,
   stateAt,
   sampleIndex,
+  moonPosAt,
   EARTH_RADIUS_SCENE,
-  ASCENT_END,
-  BURN_T,
-  tEntry,
+  MOON_RADIUS_SCENE,
+  EARTH_SPIN,
+  T_START,
+  T_END,
+  EV,
 } from "@/lib/mission";
-import { useMission } from "@/lib/store";
+import { useMission, autoWarp } from "@/lib/store";
 
 /* ---------------------------------------------------------------- Earth -- */
 
@@ -61,26 +64,39 @@ const ATMO_FRAG = /* glsl */ `
 `;
 
 function Earth() {
+  const spin = useRef();
   const map = useLoader(THREE.TextureLoader, "/textures/earth.jpg");
   map.colorSpace = THREE.SRGBColorSpace;
   map.anisotropy = 4;
 
+  // Real sidereal rotation, phased so the pad sits over Florida at liftoff.
+  // The trajectory stays inertial; the planet turns beneath it, which also
+  // parks the splashdown track over the eastern Pacific nine days later.
+  useFrame(() => {
+    if (spin.current) {
+      const met = useMission.getState().met;
+      spin.current.rotation.y = EARTH_SPIN.phase0 + EARTH_SPIN.omega * Math.max(0, met);
+    }
+  });
+
   return (
     <group>
-      <mesh>
-        <sphereGeometry args={[EARTH_RADIUS_SCENE, 64, 64]} />
-        <meshStandardMaterial map={map} roughness={1} metalness={0} />
-      </mesh>
-      <mesh scale={1.002}>
-        <sphereGeometry args={[EARTH_RADIUS_SCENE, 48, 48]} />
-        <shaderMaterial
-          vertexShader={OVERLAY_VERT}
-          fragmentShader={GRID_FRAG}
-          transparent
-          depthWrite={false}
-          blending={THREE.AdditiveBlending}
-        />
-      </mesh>
+      <group ref={spin}>
+        <mesh>
+          <sphereGeometry args={[EARTH_RADIUS_SCENE, 64, 64]} />
+          <meshStandardMaterial map={map} roughness={1} metalness={0} />
+        </mesh>
+        <mesh scale={1.002}>
+          <sphereGeometry args={[EARTH_RADIUS_SCENE, 48, 48]} />
+          <shaderMaterial
+            vertexShader={OVERLAY_VERT}
+            fragmentShader={GRID_FRAG}
+            transparent
+            depthWrite={false}
+            blending={THREE.AdditiveBlending}
+          />
+        </mesh>
+      </group>
       <mesh scale={1.022}>
         <sphereGeometry args={[EARTH_RADIUS_SCENE, 48, 48]} />
         <shaderMaterial
@@ -98,16 +114,49 @@ function Earth() {
 
 /* ----------------------------------------------------------------- Moon -- */
 
-// Scenery for now (the EFT-1 profile never leaves Earth's neighborhood).
-// Distance is compressed; radius is true to scale with the Earth beside it.
+const moonScratch = [0, 0, 0];
+
+// The real Moon: true radius at true distance, riding the baked hourly
+// ephemeris track (it sweeps ~117 degrees of its orbit across the mission).
+// Tidally locked: the same face turns toward Earth the whole way.
 function Moon() {
+  const group = useRef();
   const map = useLoader(THREE.TextureLoader, "/textures/moon.jpg");
   map.colorSpace = THREE.SRGBColorSpace;
+
+  useFrame(() => {
+    if (!group.current) return;
+    const met = useMission.getState().met;
+    moonPosAt(met, moonScratch);
+    group.current.position.set(moonScratch[0], moonScratch[1], moonScratch[2]);
+    group.current.lookAt(0, 0, 0);
+  });
+
+  // Faint arc of the Moon's motion over the mission window — orientation
+  // furniture for the orbit camera at figure-eight scale.
+  const track = useMemo(() => {
+    const pts = [];
+    for (let t = T_START; t <= T_END; t += 7200) {
+      const p = moonPosAt(t, [0, 0, 0]);
+      pts.push(new THREE.Vector3(p[0], p[1], p[2]));
+    }
+    const geom = new THREE.BufferGeometry().setFromPoints(pts);
+    return new THREE.Line(
+      geom,
+      new THREE.LineBasicMaterial({ color: "#3c4a5e", transparent: true, opacity: 0.35 })
+    );
+  }, []);
+
   return (
-    <mesh position={[-70, 18, -55]} rotation={[0, Math.PI * 0.9, 0]}>
-      <sphereGeometry args={[1.737, 48, 48]} />
-      <meshStandardMaterial map={map} roughness={1} metalness={0} />
-    </mesh>
+    <group>
+      <group ref={group}>
+        <mesh rotation={[0, Math.PI, 0]}>
+          <sphereGeometry args={[MOON_RADIUS_SCENE, 48, 48]} />
+          <meshStandardMaterial map={map} roughness={1} metalness={0} />
+        </mesh>
+      </group>
+      <primitive object={track} />
+    </group>
   );
 }
 
@@ -115,15 +164,19 @@ function Moon() {
 
 const PHASE_COLORS = {
   ascent: new THREE.Color("#ffffff"),
-  coast: new THREE.Color("#4c5b74"),
-  ellipse: new THREE.Color("#93a7cc"),
+  earthOps: new THREE.Color("#54627e"),
+  outbound: new THREE.Color("#93a7cc"),
+  flyby: new THREE.Color("#e9edf6"),
+  ret: new THREE.Color("#7d8fb5"),
   entry: new THREE.Color("#fc3d21"),
 };
 
 function colorFor(t) {
-  if (t <= ASCENT_END) return PHASE_COLORS.ascent;
-  if (t <= BURN_T) return PHASE_COLORS.coast;
-  if (t <= tEntry) return PHASE_COLORS.ellipse;
+  if (t <= EV.INSERT) return PHASE_COLORS.ascent;
+  if (t <= EV.TLI) return PHASE_COLORS.earthOps;
+  if (t <= EV.LUNAR_SOI) return PHASE_COLORS.outbound;
+  if (t <= EV.SOI_EXIT) return PHASE_COLORS.flyby;
+  if (t <= EV.ENTRY) return PHASE_COLORS.ret;
   return PHASE_COLORS.entry;
 }
 
@@ -142,7 +195,7 @@ function Trajectory() {
     dimGeom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
     const fullLine = new THREE.Line(
       dimGeom,
-      new THREE.LineBasicMaterial({ color: "#5c7099", transparent: true, opacity: 0.45 })
+      new THREE.LineBasicMaterial({ color: "#5c7099", transparent: true, opacity: 0.4 })
     );
 
     const progressGeom = new THREE.BufferGeometry();
@@ -238,17 +291,19 @@ function Capsule() {
   const group = useRef();
   const model = useRef();
   const plasma = useRef();
+  const glow = useRef();
   const glowTex = useMemo(makeGlowTexture, []);
   const xAxis = useMemo(() => new THREE.Vector3(1, 0, 0), []);
   const fwd = useMemo(() => new THREE.Vector3(), []);
   const quat = useMemo(() => new THREE.Quaternion(), []);
 
-  useFrame(() => {
+  useFrame(({ camera }) => {
     const met = useMission.getState().met;
     const s = stateAt(met);
     if (group.current) group.current.position.set(s.x, s.y, s.z);
 
-    // Point the stack along the velocity vector.
+    // Point the stack along the velocity vector, and grow it gently with
+    // camera distance so it still reads as a vehicle at translunar range.
     if (model.current) {
       const prev = stateAt(met - 8);
       fwd.set(s.x - prev.x, s.y - prev.y, s.z - prev.z);
@@ -256,11 +311,19 @@ function Capsule() {
       fwd.normalize();
       quat.setFromUnitVectors(xAxis, fwd);
       model.current.quaternion.slerp(quat, 0.25);
+
+      const camDist = camera.position.distanceTo(group.current.position);
+      const sc = 0.7 * THREE.MathUtils.clamp(camDist / 2.4, 1, 3.6);
+      model.current.scale.setScalar(sc);
+      if (glow.current) {
+        const gs = 0.032 * THREE.MathUtils.clamp(camDist / 2.6, 1, 5);
+        glow.current.scale.set(gs, gs, 1);
+      }
     }
 
     if (plasma.current) {
-      const active = s.alt < 135 && s.speed > 1.2 && met > tEntry - 30;
-      const k = active ? Math.min(1, s.g / 8.2) : 0;
+      const active = s.alt < 135 && s.speed > 1.2 && met > EV.ENTRY - 60;
+      const k = active ? Math.min(1, s.g / 4.2) : 0;
       plasma.current.material.opacity = k * 0.9;
       const sc = 0.05 + k * 0.22;
       plasma.current.scale.set(sc, sc, 1);
@@ -272,7 +335,7 @@ function Capsule() {
       <group ref={model} scale={0.7}>
         <OrionModel />
       </group>
-      <sprite scale={[0.032, 0.032, 1]}>
+      <sprite ref={glow} scale={[0.032, 0.032, 1]}>
         <spriteMaterial
           map={glowTex}
           color="#cfe0ff"
@@ -305,14 +368,14 @@ function CameraRig() {
   const look = useRef(new THREE.Vector3());
 
   // Mode transitions. Entering orbit: jump to a vantage that frames Earth
-  // and the trajectory, instead of inheriting a chase position that leaves
-  // the night side filling the screen (the reported "black screen").
+  // and the local stretch of trajectory at whatever scale the mission is at.
   // Returning to chase: sync the smoother so the camera glides, not snaps.
   useEffect(() => {
     if (camMode === "orbit") {
       const s = stateAt(useMission.getState().met);
-      const dir = new THREE.Vector3(s.x, s.y, s.z).normalize();
-      camera.position.copy(dir.multiplyScalar(30)).add(new THREE.Vector3(0, 10, 0));
+      const p = new THREE.Vector3(s.x, s.y, s.z);
+      const d = Math.max(30, p.length() * 1.5);
+      camera.position.copy(p.clone().normalize().multiplyScalar(d)).add(new THREE.Vector3(0, d * 0.3, 0));
       camera.lookAt(0, 0, 0);
     } else {
       smoothed.current.copy(camera.position);
@@ -321,7 +384,8 @@ function CameraRig() {
 
   useFrame((_, dt) => {
     if (camMode !== "chase") return;
-    const met = useMission.getState().met;
+    const st = useMission.getState();
+    const met = st.met;
     const s = stateAt(met);
     const p = new THREE.Vector3(s.x, s.y, s.z);
 
@@ -331,29 +395,50 @@ function CameraRig() {
     fwd.normalize();
 
     const out = p.clone().normalize();
-    // Far enough back that the capsule reads as a vehicle over a planet,
-    // not a silhouette filling the frame. Low over the pad the camera sits
-    // higher and pitches down so the ground and horizon anchor the launch;
-    // both ease off as altitude builds and space takes over.
+    // Near Earth this is the proven launch framing: camera high over the pad,
+    // swinging to a trailing chase as altitude builds. From there the pull-back
+    // grows with altitude (capped) so the coast reads as a vehicle in deep
+    // space rather than an empty frame.
     const low = 1 - Math.min(s.alt / 120, 1); // 1 on the pad -> 0 by 120 km
-    const dist = (1.35 + (s.alt / 5800) * 3.2) * (1 + low);
+    const altU = s.alt / 1000; // scene units above the surface
+    let dist = (1.35 + Math.min(altU * 0.75, 4.4)) * (1 + low);
+
+    // Lunar approach: within ~20,000 km of the Moon, back off along the
+    // encounter and swing the look toward it, so closest approach frames
+    // spacecraft and Moon together.
+    moonPosAt(met, moonScratch);
+    const moonP = new THREE.Vector3(moonScratch[0], moonScratch[1], moonScratch[2]);
+    const prox = THREE.MathUtils.smoothstep(1 - THREE.MathUtils.clamp((s.rangeMoon - 2000) / 18000, 0, 1), 0, 1);
+    dist += prox * (p.distanceTo(moonP) * 0.35 + 1.8);
+
     // Low over the pad the camera leads the vehicle and looks back west:
     // east of Canaveral is featureless Atlantic, so a trailing camera sees
     // only blue - while the look-back frames the Florida coastline AND puts
-    // the sun behind the lens, front-lighting the spacecraft. The offset
-    // swings smoothly to a conventional trailing chase as altitude builds.
+    // the sun behind the lens, front-lighting the spacecraft.
     const fwdOffset = -dist * (1 - 2 * low); // ahead at the pad, behind in space
     const target = p
       .clone()
       .addScaledVector(fwd, fwdOffset)
       .addScaledVector(out, dist * (0.5 + 0.4 * low));
+    // Off-axis shift near the Moon: stand to the side of the capsule-Moon
+    // line so the encounter reads in profile instead of stacked.
+    if (prox > 0.01) {
+      const side = new THREE.Vector3().subVectors(moonP, p).normalize().cross(out).normalize();
+      target.addScaledVector(side, prox * dist * 0.5);
+    }
 
-    const k = 1 - Math.exp(-3.2 * dt);
+    const lookBase = p
+      .clone()
+      .addScaledVector(fwd, 0.3 * (1 - low))
+      .addScaledVector(out, -0.12 * low);
+    const lookTarget = lookBase.lerp(p.clone().lerp(moonP, 0.42), prox * 0.85);
+
+    // Smoothing scaled with warp: at 40,000x the capsule moves whole units
+    // per frame, and an un-scaled smoother would trail it off screen.
+    const w = st.warp === "auto" ? autoWarp(met) : st.warp;
+    const k = 1 - Math.exp(-3.2 * dt * THREE.MathUtils.clamp(w / 8, 1, 40));
     smoothed.current.lerp(target, k);
-    look.current.lerp(
-      p.clone().addScaledVector(fwd, 0.3 * (1 - low)).addScaledVector(out, -0.12 * low),
-      k
-    );
+    look.current.lerp(lookTarget, k);
     camera.position.copy(smoothed.current);
     camera.lookAt(look.current);
   });
@@ -365,7 +450,7 @@ function CameraRig() {
       dampingFactor={0.08}
       enablePan={false}
       minDistance={10.5}
-      maxDistance={90}
+      maxDistance={560}
       target={[0, 0, 0]}
     />
   ) : null;
@@ -399,7 +484,7 @@ export default function Scene({ reducedMotion }) {
   return (
     <Canvas
       dpr={[1, 1.5]}
-      camera={{ position: [0, 3, 16], fov: 42, near: 0.01, far: 400 }}
+      camera={{ position: [0, 3, 16], fov: 42, near: 0.05, far: 3000 }}
       gl={{ antialias: true }}
       style={{ position: "absolute", inset: 0 }}
     >
@@ -417,7 +502,7 @@ export default function Scene({ reducedMotion }) {
       <Trajectory />
       <Capsule />
       <CameraRig />
-      <Stars radius={120} depth={50} count={2500} factor={3.2} saturation={0} fade speed={0} />
+      <Stars radius={1200} depth={120} count={3000} factor={12} saturation={0} fade speed={0} />
       {!reducedMotion && (
         <EffectComposer multisampling={0}>
           <Bloom mipmapBlur intensity={0.85} luminanceThreshold={0.2} luminanceSmoothing={0.35} />
