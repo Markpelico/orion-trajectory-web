@@ -369,7 +369,7 @@ function Controls() {
         ))}
       </div>
       <div className="hud-btn-group" role="group" aria-label="Camera">
-        {["chase", "orbit"].map((m) => (
+        {["chase", "orbit", "pov"].map((m) => (
           <button
             key={m}
             className={camMode === m ? "hud-btn is-on" : "hud-btn"}

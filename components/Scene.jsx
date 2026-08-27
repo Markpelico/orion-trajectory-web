@@ -483,6 +483,13 @@ function Capsule() {
     const s = stateAt(met);
     if (group.current) group.current.position.set(s.x, s.y, s.z);
 
+    // POV rides the hull: hide the stylized stack and its glow so the crew
+    // view is sky, not the inside of an oversized cone. The plasma sprite
+    // stays — through entry it wraps the lens the way it wrapped the windows.
+    const pov = st.camMode === "pov";
+    if (model.current) model.current.visible = !pov;
+    if (glow.current) glow.current.visible = !pov;
+
     // Point the stack along the velocity vector, and grow it gently with
     // camera distance so it still reads as a vehicle at translunar range.
     if (model.current) {
@@ -888,12 +895,57 @@ function AuditHook() {
 
 /* -------------------------------------------------------------- Cameras -- */
 
+/**
+ * POV look scheduling: slerp between mission-phase view directions.
+ * `slerpDir` interpolates unit vectors along the great circle (nlerp is fine
+ * at these angles but drifts speed; setFromUnitVectors keeps it exact).
+ */
+const povScratch = {
+  q: new THREE.Quaternion(),
+  m: new THREE.Matrix4(),
+  a: new THREE.Vector3(),
+};
+
+function slerpDir(out, from, to, k) {
+  if (k <= 0) return out.copy(from);
+  if (k >= 1) return out.copy(to);
+  povScratch.q.identity();
+  povScratch.a.crossVectors(from, to);
+  const dot = THREE.MathUtils.clamp(from.dot(to), -1, 1);
+  if (povScratch.a.lengthSq() < 1e-12) {
+    // Parallel or anti-parallel: fall back to lerp+normalize with a nudge.
+    return out.copy(from).lerp(to, k).add(povScratch.a.set(0, 1e-4, 0)).normalize();
+  }
+  povScratch.a.normalize();
+  povScratch.q.setFromAxisAngle(povScratch.a, Math.acos(dot) * k);
+  return out.copy(from).applyQuaternion(povScratch.q);
+}
+
 function CameraRig() {
   const { camera } = useThree();
   const camMode = useMission((s) => s.camMode);
   const smoothed = useRef(new THREE.Vector3(0, 3, 16));
   const look = useRef(new THREE.Vector3());
   const [orbitTarget, setOrbitTarget] = useState([0, 0, 0]);
+  const povQ = useMemo(() => new THREE.Quaternion(), []);
+  const povV = useMemo(
+    () => ({
+      p: new THREE.Vector3(),
+      fwd: new THREE.Vector3(),
+      out: new THREE.Vector3(),
+      side: new THREE.Vector3(),
+      moonP: new THREE.Vector3(),
+      dirEarth: new THREE.Vector3(),
+      dirMoon: new THREE.Vector3(),
+      dirA: new THREE.Vector3(),
+      dirRise: new THREE.Vector3(),
+      dir: new THREE.Vector3(),
+      up: new THREE.Vector3(),
+      upRise: new THREE.Vector3(),
+      eye: new THREE.Vector3(),
+    }),
+    []
+  );
 
   // Mode transitions. Entering orbit: a high oblique vantage — the translunar
   // trajectory is nearly planar, so an edge-on entry collapses the
@@ -919,9 +971,108 @@ function CameraRig() {
     } else {
       smoothed.current.copy(camera.position);
     }
-  }, [camMode, camera]);
+    // The crew view uses a wider lens: a window, not a telephoto chase drone.
+    const wantFov = camMode === "pov" ? 58 : 42;
+    if (camera.fov !== wantFov) {
+      camera.fov = wantFov;
+      camera.updateProjectionMatrix();
+    }
+    if (camMode === "pov") povQ.copy(camera.quaternion);
+  }, [camMode, camera, povQ]);
 
   useFrame((_, dt) => {
+    // ------------------------------------------------------------- POV --
+    // Capsule POV: ride just outside the hull and look where the crew
+    // looked. One continuous direction schedule across the mission:
+    //   ascent/Earth orbit  — prograde, Earth's horizon in the lower frame
+    //   outbound coast      — turned to the Moon, watching it grow
+    //   flyby               — the Apollo 8 composition: Moon terrain below,
+    //                         Earth rising over the lunar limb ("up" is
+    //                         away from the Moon, so the limb is a horizon)
+    //   return coast        — home: Earth centered, growing
+    //   entry               — prograde into the plasma
+    if (camMode === "pov") {
+      const st = useMission.getState();
+      const met = st.met;
+      const s = stateAt(met);
+      const V = povV;
+      V.p.set(s.x, s.y, s.z);
+
+      const dts = THREE.MathUtils.clamp(currentWarp(st) * 0.5, 1, 60);
+      const prev = stateAt(met - dts);
+      V.fwd.set(s.x - prev.x, s.y - prev.y, s.z - prev.z);
+      if (V.fwd.lengthSq() < 1e-10) V.fwd.set(-s.z, 0, s.x);
+      V.fwd.normalize();
+      V.out.copy(V.p).normalize();
+
+      moonPosAt(met, moonScratch);
+      V.moonP.set(moonScratch[0], moonScratch[1], moonScratch[2]);
+      V.dirEarth.copy(V.p).multiplyScalar(-1).normalize();
+      V.dirMoon.copy(V.moonP).sub(V.p).normalize();
+
+      // Prograde-with-horizon: ahead, biased down toward the planet under us.
+      V.dirA.copy(V.fwd).addScaledVector(V.out, -0.38).normalize();
+
+      // Schedule weights. The ephemeris says Earth slips behind the lunar
+      // limb ~18 min before closest approach and rises again ~20 min after
+      // (the Apollo 8 geometry, rerun) — so the "Earthrise" shot holds from
+      // just before occultation until well into departure.
+      const kAB = THREE.MathUtils.smoothstep(met, EV.TLI_END + 1200, EV.TLI_END + 26000);
+      const kBC = THREE.MathUtils.smoothstep(met, EV.FLYBY - 4200, EV.FLYBY - 1500);
+      const kCD = THREE.MathUtils.smoothstep(met, EV.FLYBY + 3600, EV.FLYBY + 9600);
+      const kDE = THREE.MathUtils.smoothstep(met, EV.ENTRY - 4800, EV.ENTRY - 900);
+
+      // Earthrise composition, driven by the real separation angle A between
+      // Earth and the Moon's center as seen from the capsule: look ~2 deg
+      // Moonward of Earth, so Earth rides just above the frame center while
+      // the limb (A minus the Moon's angular radius below it) fills the
+      // lower frame. While Earth is occulted this collapses toward the
+      // Moon's disc on its own — home is behind the rock, then it rises.
+      const sepA = THREE.MathUtils.radToDeg(
+        Math.acos(THREE.MathUtils.clamp(V.dirEarth.dot(V.dirMoon), -1, 1))
+      );
+      const kLimb = THREE.MathUtils.clamp(1.7 / Math.max(sepA, 0.001), 0.06, 0.6);
+      slerpDir(V.dirRise, V.dirEarth, V.dirMoon, kLimb);
+
+      // The rise itself gets a long lens — Anders shot the original on a
+      // 250mm. Zoom in as Earth clears the limb, ease back out on departure.
+      const riseZoom =
+        THREE.MathUtils.smoothstep(met, EV.FLYBY + 500, EV.FLYBY + 1400) *
+        (1 - THREE.MathUtils.smoothstep(met, EV.FLYBY + 3600, EV.FLYBY + 6600));
+      const wantFov = 58 - 25 * riseZoom;
+      if (Math.abs(camera.fov - wantFov) > 0.01) {
+        camera.fov = wantFov;
+        camera.updateProjectionMatrix();
+      }
+
+      slerpDir(V.dir, V.dirA, V.dirMoon, kAB);
+      slerpDir(V.dir, V.dir, V.dirRise, kBC);
+      slerpDir(V.dir, V.dir, V.dirEarth, kCD);
+      // Entry: back to prograde (blunt-end first — the view out the window
+      // is the direction of travel wreathed in plasma).
+      slerpDir(V.dir, V.dir, V.dirA, kDE);
+
+      // "Up": away from Earth through most of the flight, away from the Moon
+      // through the flyby so the lunar surface reads as the ground below.
+      const riseK = kBC * (1 - kCD);
+      V.upRise.copy(V.p).sub(V.moonP).normalize();
+      slerpDir(V.up, V.out, V.upRise, riseK);
+
+      // Stand a whisker off the flight path so the fat trajectory line
+      // doesn't run through the lens.
+      V.side.crossVectors(V.out, V.fwd);
+      if (V.side.lengthSq() < 1e-9) V.side.set(0, 1, 0);
+      V.side.normalize();
+      V.eye.copy(V.p).addScaledVector(V.side, 0.05).addScaledVector(V.up, 0.02);
+
+      camera.position.copy(V.eye);
+      povScratch.m.lookAt(V.eye, povScratch.a.copy(V.eye).add(V.dir), V.up);
+      povQ.setFromRotationMatrix(povScratch.m);
+      // Cinematic damping on attitude only; position must track exactly.
+      camera.quaternion.slerp(povQ, 1 - Math.exp(-2.6 * dt));
+      return;
+    }
+
     if (camMode !== "chase") return;
     const st = useMission.getState();
     const met = st.met;
