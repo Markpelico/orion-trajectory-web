@@ -20,6 +20,7 @@ import {
 import { useMission, TLI_ARM_LEAD, TLI_HOLD_RATE } from "@/lib/store";
 import { useInspect } from "@/lib/inspect";
 import { computeWhatIf, TLI_MAX_OVER } from "@/lib/whatif";
+import { buildHash } from "@/lib/deeplink";
 
 const SPAN = T_END - T_START;
 
@@ -54,6 +55,42 @@ function useThrottledMet(ms = 100) {
 
 /* ------------------------------------------------------------- Top bar -- */
 
+/**
+ * SHARE MOMENT: copy a deep link to the current mission time (and camera).
+ * The address bar is updated too, so the URL always names the moment on
+ * screen after a share.
+ */
+function ShareMoment({ met }) {
+  const [state, setState] = useState(null); // null | "ok" | "fail"
+  useEffect(() => {
+    if (!state) return;
+    const id = setTimeout(() => setState(null), 1800);
+    return () => clearTimeout(id);
+  }, [state]);
+
+  const copy = async () => {
+    const hash = buildHash(met, useMission.getState().camMode);
+    const url = `${window.location.origin}${window.location.pathname}${hash}`;
+    try {
+      window.history.replaceState(null, "", hash);
+      await navigator.clipboard.writeText(url);
+      setState("ok");
+    } catch {
+      setState("fail");
+    }
+  };
+
+  return (
+    <button
+      className={state === "ok" ? "hud-share is-copied" : "hud-share"}
+      onClick={copy}
+      title="Copy a link to this exact mission moment"
+    >
+      {state === "ok" ? "COPIED" : state === "fail" ? "COPY FAILED" : "SHARE MOMENT ⧉"}
+    </button>
+  );
+}
+
 function TopBar({ met }) {
   return (
     <header className="hud-top">
@@ -61,8 +98,11 @@ function TopBar({ met }) {
         <span className="hud-id-main">ORION · TRAJECTORY DISPLAY</span>
         <span className="hud-id-sub">ARTEMIS II REPLAY // JPL HORIZONS EPHEMERIS</span>
       </div>
-      <div className="hud-clock" aria-label="Mission elapsed time">
-        {formatMET(met)}
+      <div className="hud-clock-wrap">
+        <div className="hud-clock" aria-label="Mission elapsed time">
+          {formatMET(met)}
+        </div>
+        <ShareMoment met={met} />
       </div>
       <nav className="hud-links">
         <a
