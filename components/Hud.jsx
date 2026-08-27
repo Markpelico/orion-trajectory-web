@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   PHASES,
@@ -17,8 +17,9 @@ import {
   formatMET,
   formatKm,
 } from "@/lib/mission";
-import { useMission } from "@/lib/store";
+import { useMission, TLI_ARM_LEAD, TLI_HOLD_RATE } from "@/lib/store";
 import { useInspect } from "@/lib/inspect";
+import { computeWhatIf, TLI_MAX_OVER } from "@/lib/whatif";
 
 const SPAN = T_END - T_START;
 
@@ -336,6 +337,224 @@ function InspectChip() {
   );
 }
 
+/* ------------------------------------------------------- TLI interactive -- */
+
+const TLI_DUR = EV.TLI_END - EV.TLI; // 355 s — the real 5m55s
+
+function fmtBurn(sec) {
+  const s = Math.max(0, Math.round(sec));
+  return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+}
+
+/**
+ * Press-and-hold translunar injection. Arms 60 mission-seconds before the
+ * real ignition; holding (pointer or spacebar) snaps the clock to ignition
+ * and burns the documented 5m55s at a labeled 60x presentation rate — a full
+ * burn is just under six held seconds. Release early or ride past cutoff and
+ * lib/whatif.js turns the state vector at cutoff into an honest two-body
+ * ghost orbit with a verdict; leaving it alone lets AUTO fly the real burn
+ * exactly as before. Never blocks the replay: scrub, play, or RESUME all
+ * abandon the what-if instantly.
+ */
+function TliControl({ met }) {
+  const tli = useMission((s) => s.tli);
+
+  const armed =
+    tli.mode === "idle" && !tli.attempted && met >= EV.TLI - TLI_ARM_LEAD && met < EV.TLI;
+  const holding = tli.mode === "holding";
+
+  const release = useCallback(() => {
+    const st = useMission.getState();
+    if (st.tli.mode !== "holding") return;
+    const m = st.met;
+    if (Math.abs(m - EV.TLI_END) <= 7) {
+      st.tliCutoffNominal(m);
+    } else {
+      st.tliCutoffGhost(computeWhatIf(m), m);
+      // Pull out wide for the reveal: the ghost, the flown line, the Moon.
+      st.setCamMode("orbit");
+    }
+  }, []);
+
+  // Propellant depletion: the hold cannot run forever.
+  useEffect(() => {
+    if (holding && met >= EV.TLI_END + TLI_MAX_OVER - 0.5) release();
+  }, [holding, met, release]);
+
+  // Spacebar is a hold too. Scoped here so the burn owns Space whenever the
+  // control is armed or burning; the shortcuts layer defers to it.
+  useEffect(() => {
+    const down = (e) => {
+      if (e.code !== "Space" || e.repeat) return;
+      const st = useMission.getState();
+      const m = st.met;
+      if (
+        st.tli.mode === "idle" &&
+        !st.tli.attempted &&
+        m >= EV.TLI - TLI_ARM_LEAD &&
+        m < EV.TLI
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+        st.tliHold();
+      }
+    };
+    const up = (e) => {
+      if (e.code !== "Space") return;
+      if (useMission.getState().tli.mode === "holding") {
+        e.preventDefault();
+        e.stopPropagation();
+        release();
+      }
+    };
+    const blur = () => {
+      if (useMission.getState().tli.mode === "holding") release();
+    };
+    window.addEventListener("keydown", down, true);
+    window.addEventListener("keyup", up, true);
+    window.addEventListener("blur", blur);
+    return () => {
+      window.removeEventListener("keydown", down, true);
+      window.removeEventListener("keyup", up, true);
+      window.removeEventListener("blur", blur);
+    };
+  }, [release]);
+
+  // Nominal-cutoff toast clears itself; the replay is already rolling on.
+  useEffect(() => {
+    if (!tli.nominal) return;
+    const id = setTimeout(() => useMission.getState().tliClearNominal(), 4600);
+    return () => clearTimeout(id);
+  }, [tli.nominal]);
+
+  const burnSec = holding ? met - EV.TLI : 0;
+  const over = holding && met > EV.TLI_END;
+
+  return (
+    <>
+      {(armed || holding) && (
+        <div className={holding ? "hud-tli is-holding" : "hud-tli"}>
+          {!holding && <div className="hud-tli-count">IGNITION T−{Math.max(0, Math.ceil(EV.TLI - met))}S</div>}
+          <button
+            className="hud-btn is-big hud-tli-btn"
+            onPointerDown={(e) => {
+              e.currentTarget.setPointerCapture(e.pointerId);
+              useMission.getState().tliHold();
+            }}
+            onPointerUp={release}
+            onPointerCancel={release}
+            onContextMenu={(e) => e.preventDefault()}
+          >
+            {holding ? (
+              <>
+                BURNING · {fmtBurn(burnSec)} / {fmtBurn(TLI_DUR)}
+                <span className="hud-tli-bar" aria-hidden="true">
+                  <span
+                    className="hud-tli-fill"
+                    style={{ width: `${Math.min(100, (burnSec / TLI_DUR) * 100)}%` }}
+                  />
+                </span>
+              </>
+            ) : (
+              "HOLD TO EXECUTE TLI"
+            )}
+          </button>
+          <div className="hud-tli-sub">
+            {over ? (
+              <span className="hud-tli-over">
+                OVERBURN +{Math.round(met - EV.TLI_END)}S — DEPLETION AT +{TLI_MAX_OVER}S
+              </span>
+            ) : holding ? (
+              <>RELEASE AT {fmtBurn(TLI_DUR)} · TIME ×{TLI_HOLD_RATE}</>
+            ) : (
+              <>REAL 5M55S BURN · TIME ×{TLI_HOLD_RATE} · FULL HOLD ≈ 6S · SPACE HOLDS TOO · OR LET AUTO FLY IT</>
+            )}
+          </div>
+        </div>
+      )}
+
+      <AnimatePresence>
+        {tli.mode === "ghost" && tli.ghost && (
+          <motion.div
+            className="hud-verdict"
+            // Opacity only: the centering lives in a CSS transform, and any
+            // motion-animated x/y would overwrite it.
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.35, ease: [0.19, 1, 0.22, 1] }}
+          >
+            <VerdictBody v={tli.ghost.verdict} />
+            <div className="hud-verdict-actions">
+              <button className="hud-btn is-big" onClick={() => useMission.getState().tliResume()}>
+                RESUME REPLAY
+              </button>
+            </div>
+            <p className="hud-verdict-note">
+              SIMPLIFIED TWO-BODY WHAT-IF — THE MOON'S GRAVITY IS NOT MODELED. THE SOLID LINE
+              IS THE REAL JPL HORIZONS SOLUTION.
+            </p>
+          </motion.div>
+        )}
+        {tli.nominal && (
+          <motion.div
+            key="nominal"
+            className="hud-verdict is-nominal"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.35, ease: [0.19, 1, 0.22, 1] }}
+          >
+            <h3 className="hud-verdict-title">NOMINAL CUTOFF</h3>
+            <p className="hud-verdict-line">
+              FULL {fmtBurn(TLI_DUR)} BURN — THIS IS THE FLOWN INJECTION. 6,545 KM FLYBY,
+              FREE RETURN HOME.
+            </p>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </>
+  );
+}
+
+function VerdictBody({ v }) {
+  const title =
+    v.overSec >= TLI_MAX_OVER - 1
+      ? `DEPLETION CUTOFF +${TLI_MAX_OVER}S`
+      : v.cutoffDelta > 0
+        ? `CUTOFF ${v.cutoffDelta}S EARLY`
+        : `OVERBURN +${v.overSec}S`;
+  const n = (x) => Math.round(x).toLocaleString();
+  let line;
+  let sub;
+  if (v.kind === "escape") {
+    line = "ESCAPE ENERGY — HYPERBOLIC DEPARTURE FROM EARTH ORBIT.";
+    sub = "No corridor, no flyby, no ride home.";
+  } else if (v.kind === "short") {
+    line = `WHAT-IF APOGEE ${n(v.raKm)} KM — ${n(-v.diffKm)} KM BELOW THE FLOWN INJECTION.`;
+    sub = "The Moon never comes. No lunar arrival, no free return.";
+  } else if (v.kind === "hot") {
+    line = `WHAT-IF APOGEE ${n(v.raKm)} KM — ${n(v.diffKm)} KM HOT OF THE FLOWN INJECTION.`;
+    sub = "Overshoots the corridor the flyby was threaded through. No free return.";
+  } else {
+    line = `WHAT-IF APOGEE ${n(v.raKm)} KM — WITHIN ${n(Math.abs(v.diffKm))} KM OF THE FLOWN INJECTION.`;
+    sub =
+      "Close — but the free-return corridor is a needle threaded 6,545 km over the far side. Off-nominal cutoff, no flyby.";
+  }
+  return (
+    <>
+      <h3 className="hud-verdict-title">{title}</h3>
+      <p className="hud-verdict-line">{line}</p>
+      <p className="hud-verdict-sub">{sub}</p>
+      <p className="hud-verdict-flown">FLOWN: FULL 5M55S BURN → 6,545 KM LUNAR FLYBY → FREE RETURN.</p>
+      <p className="hud-verdict-legend">
+        <span className="is-ghost">· · · ·</span> TWO-BODY WHAT-IF&nbsp;&nbsp;&nbsp;
+        <span className="is-flown">———</span> FLOWN EPHEMERIS
+      </p>
+    </>
+  );
+}
+
 /* ------------------------------------------------------------ Controls -- */
 
 // Manual presets sized for a nine-day mission: 25,000x runs a coast day in
@@ -508,6 +727,7 @@ export default function Hud({ reducedMotion }) {
       <PhaseSlam phaseIdx={phaseIdx} reducedMotion={reducedMotion} />
       <Countdown met={met} />
       <InspectChip />
+      <TliControl met={met} />
       <div className="hud-bottom">
         <Telemetry s={s} />
         <Controls />

@@ -370,6 +370,54 @@ function Trajectory() {
   );
 }
 
+/* ---------------------------------------------------------------- Ghost -- */
+
+/**
+ * The TLI what-if: a dashed amber conic from lib/whatif.js, drawn alongside
+ * the flown line while the verdict card is up. Dashed and colored so it can
+ * never be mistaken for ephemeris.
+ */
+function GhostTrajectory() {
+  const ghost = useMission((s) => s.tli.ghost);
+  const size = useThree((s) => s.size);
+
+  const line = useMemo(() => {
+    if (!ghost) return null;
+    const geom = new LineGeometry();
+    geom.setPositions(Array.from(ghost.pts));
+    const mat = new LineMaterial({
+      color: 0xffb357,
+      linewidth: 2.2,
+      transparent: true,
+      opacity: 0.9,
+      dashed: true,
+      dashSize: 2.6,
+      gapSize: 1.8,
+      depthWrite: false,
+    });
+    const l = new Line2(geom, mat);
+    l.computeLineDistances();
+    l.frustumCulled = false;
+    return l;
+  }, [ghost]);
+
+  useEffect(() => {
+    if (line) line.material.resolution.set(size.width, size.height);
+  }, [line, size]);
+
+  useEffect(
+    () => () => {
+      if (line) {
+        line.geometry.dispose();
+        line.material.dispose();
+      }
+    },
+    [line]
+  );
+
+  return line ? <primitive object={line} /> : null;
+}
+
 /* -------------------------------------------------------------- Capsule -- */
 
 /**
@@ -386,7 +434,13 @@ const BURNS = [
   { start: EV.TLI, end: EV.TLI_END, color: new THREE.Color("#ffc998") },
 ];
 
-function burnStateAt(met) {
+const OVERBURN = { k: 1, color: new THREE.Color("#ffc998") };
+
+function burnStateAt(met, tliMode) {
+  // Interactive overburn: the user is still holding past the flown cutoff,
+  // so the AJ10 keeps firing until depletion even though the real windows
+  // below have closed.
+  if (tliMode === "holding" && met > EV.TLI_END - 1) return OVERBURN;
   for (const b of BURNS) {
     if (met < b.start || met > b.end) continue;
     const ease = Math.min(14, (b.end - b.start) * 0.3);
@@ -548,7 +602,7 @@ function Capsule() {
     // whatever the warp. The plume rides the model group, so the attitude
     // plumbing above already aims it opposite the velocity vector.
     if (plume.current) {
-      const burn = burnStateAt(met);
+      const burn = burnStateAt(met, st.tli.mode);
       const k = burn ? burn.k : 0;
       plume.current.visible = k > 0.002;
       if (plumeGlow.current) plumeGlow.current.visible = k > 0.002;
@@ -952,8 +1006,26 @@ function CameraRig() {
   // figure-eight into a line. Deep in the mission the pivot moves to the
   // halfway point so the whole Earth-to-Moon structure fits the frame.
   // Returning to chase: sync the smoother so the camera glides, not snaps.
+  const ghost = useMission((s) => s.tli.ghost);
+
   useEffect(() => {
     if (camMode === "orbit") {
+      if (ghost) {
+        // What-if reveal: frame the ghost conic face-on (along its orbit
+        // normal, tilted so lookAt never degenerates), with Earth, the
+        // flown line and the Moon it does or doesn't reach all in frame.
+        const mid = new THREE.Vector3(...ghost.frame.center);
+        // Bounding sphere fully inside a 42-degree vertical fov needs
+        // d >= r / tan(21 deg) ~= 2.6r; a touch more for margin.
+        const d = THREE.MathUtils.clamp(ghost.frame.radius * 2.75 + 24, 40, 615);
+        const dir = new THREE.Vector3(...ghost.frame.normal)
+          .add(new THREE.Vector3(0.42, 0.2, 0.3))
+          .normalize();
+        camera.position.copy(mid).addScaledVector(dir, d);
+        camera.lookAt(mid);
+        setOrbitTarget(mid.toArray());
+        return;
+      }
       const s = stateAt(useMission.getState().met);
       const p = new THREE.Vector3(s.x, s.y, s.z);
       const far = p.length() > 60;
@@ -978,7 +1050,7 @@ function CameraRig() {
       camera.updateProjectionMatrix();
     }
     if (camMode === "pov") povQ.copy(camera.quaternion);
-  }, [camMode, camera, povQ]);
+  }, [camMode, camera, povQ, ghost]);
 
   useFrame((_, dt) => {
     // ------------------------------------------------------------- POV --
@@ -1244,6 +1316,7 @@ export default function Scene({ reducedMotion }) {
         <Moon />
       </Suspense>
       <Trajectory />
+      <GhostTrajectory />
       <Capsule />
       <InspectLayer />
       <AuditHook />
