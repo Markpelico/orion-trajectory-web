@@ -55,6 +55,27 @@ async function run() {
   await shoot(page, "a-ascent");
   await play(page);
 
+  // Night-side pass in low orbit: Black Marble city lights + terminator.
+  await scrubTo(page, 1500);
+  await page.waitForTimeout(500);
+  await pause(page);
+  await page.waitForTimeout(1800);
+  await shoot(page, "a2-orbit-night");
+  await play(page);
+
+  // Mid-ARB: ICPS plume firing on the apogee raise.
+  await scrubTo(page, 6800);
+  await page.waitForTimeout(500);
+  await pause(page);
+  await page.waitForTimeout(1800);
+  await shoot(page, "b0-arb-plume");
+  await play(page);
+
+  // TLI slam with the plain-English subtitle still up.
+  await scrubTo(page, 90850);
+  await page.waitForTimeout(1100);
+  await shoot(page, "b1-tli-slam");
+
   // TLI hold: fat progress line over Earth, stack prograde, plume window.
   await scrubTo(page, 90980);
   await page.waitForTimeout(500);

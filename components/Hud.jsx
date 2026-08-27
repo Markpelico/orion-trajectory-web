@@ -90,7 +90,7 @@ const PhaseRail = memo(function PhaseRail({ phaseIdx }) {
               i === phaseIdx ? "hud-rail-item is-active" : i < phaseIdx ? "hud-rail-item is-past" : "hud-rail-item"
             }
             onClick={() => seek(p.t + 0.01)}
-            title={`Jump to ${p.name}`}
+            title={p.plain ? `Jump to ${p.name} — ${p.plain}` : `Jump to ${p.name}`}
           >
             <span className="hud-rail-tick" aria-hidden="true" />
             {p.short}
@@ -120,19 +120,11 @@ const PhaseSlam = memo(function PhaseSlam({ phaseIdx, reducedMotion }) {
     <div className="hud-slam" aria-live="polite">
       <AnimatePresence mode="wait">
         {phase && (
-          <motion.h2
+          <motion.div
             key={phase.name}
-            className={isEntry ? "hud-slam-text is-entry" : "hud-slam-text"}
-            initial={
-              reducedMotion
-                ? { opacity: 0 }
-                : { opacity: 0, scale: 1.08, filter: "blur(16px)", letterSpacing: "0.5em" }
-            }
-            animate={
-              reducedMotion
-                ? { opacity: 1 }
-                : { opacity: 1, scale: 1, filter: "blur(0px)", letterSpacing: "0.14em" }
-            }
+            className="hud-slam-block"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
             exit={
               reducedMotion
                 ? { opacity: 0 }
@@ -140,8 +132,33 @@ const PhaseSlam = memo(function PhaseSlam({ phaseIdx, reducedMotion }) {
             }
             transition={{ duration: 0.55, ease: [0.19, 1, 0.22, 1] }}
           >
-            {phase.name}
-          </motion.h2>
+            <motion.h2
+              className={isEntry ? "hud-slam-text is-entry" : "hud-slam-text"}
+              initial={
+                reducedMotion
+                  ? {}
+                  : { scale: 1.08, filter: "blur(16px)", letterSpacing: "0.5em" }
+              }
+              animate={
+                reducedMotion
+                  ? {}
+                  : { scale: 1, filter: "blur(0px)", letterSpacing: "0.14em" }
+              }
+              transition={{ duration: 0.55, ease: [0.19, 1, 0.22, 1] }}
+            >
+              {phase.name}
+            </motion.h2>
+            {phase.plain && (
+              <motion.p
+                className="hud-slam-plain"
+                initial={reducedMotion ? {} : { opacity: 0, y: 10 }}
+                animate={reducedMotion ? {} : { opacity: 1, y: 0 }}
+                transition={{ delay: 0.16, duration: 0.5, ease: [0.19, 1, 0.22, 1] }}
+              >
+                {phase.plain}
+              </motion.p>
+            )}
+          </motion.div>
         )}
       </AnimatePresence>
     </div>

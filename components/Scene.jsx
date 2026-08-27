@@ -78,9 +78,70 @@ const ATMO_FRAG = /* glsl */ `
 function Earth() {
   const spin = useRef();
   const atmoUniforms = useMemo(() => ({ uFade: { value: 1 } }), []);
-  const map = useLoader(THREE.TextureLoader, "/textures/earth.jpg");
+  const [map, nightMap] = useLoader(THREE.TextureLoader, [
+    "/textures/earth.jpg",
+    "/textures/earth-night.jpg", // NASA Black Marble 2016, public domain
+  ]);
   map.colorSpace = THREE.SRGBColorSpace;
   map.anisotropy = 4;
+  nightMap.colorSpace = THREE.SRGBColorSpace;
+  nightMap.anisotropy = 4;
+
+  // Day texture extended in-shader: Black Marble city lights fade in past the
+  // terminator (sun-dot mask with a soft band), a faint warm rim marks the
+  // terminator itself, and the day texture's blue dominance doubles as an
+  // ocean mask that tightens roughness so the Pacific catches a sun glint.
+  // The sun mask uses the world-space normal, so it tracks the mesh's
+  // sidereal spin automatically; SUN_DIR is the real mid-mission Sun.
+  const earthMat = useMemo(() => {
+    const mat = new THREE.MeshStandardMaterial({ map, roughness: 1, metalness: 0 });
+    mat.onBeforeCompile = (shader) => {
+      shader.uniforms.uNightMap = { value: nightMap };
+      shader.uniforms.uSunDir = {
+        value: new THREE.Vector3(SUN_DIR[0], SUN_DIR[1], SUN_DIR[2]),
+      };
+      shader.vertexShader = shader.vertexShader
+        .replace(
+          "#include <common>",
+          "#include <common>\nvarying vec3 vEarthNormal;"
+        )
+        .replace(
+          "#include <defaultnormal_vertex>",
+          "#include <defaultnormal_vertex>\nvEarthNormal = normalize(mat3(modelMatrix) * objectNormal);"
+        );
+      shader.fragmentShader = shader.fragmentShader
+        .replace(
+          "#include <common>",
+          [
+            "#include <common>",
+            "varying vec3 vEarthNormal;",
+            "uniform sampler2D uNightMap;",
+            "uniform vec3 uSunDir;",
+          ].join("\n")
+        )
+        .replace(
+          "#include <roughnessmap_fragment>",
+          [
+            "#include <roughnessmap_fragment>",
+            "float oceanMask = smoothstep(0.015, 0.09, diffuseColor.b - max(diffuseColor.r, diffuseColor.g));",
+            "roughnessFactor = mix(roughnessFactor, 0.38, oceanMask);",
+          ].join("\n")
+        )
+        .replace(
+          "#include <emissivemap_fragment>",
+          [
+            "#include <emissivemap_fragment>",
+            "float sunDot = dot(normalize(vEarthNormal), uSunDir);",
+            "float nightK = smoothstep(0.09, -0.18, sunDot);",
+            "vec3 nightLights = texture2D(uNightMap, vMapUv).rgb;",
+            "totalEmissiveRadiance += nightLights * nightK * 1.3;",
+            "float termK = 1.0 - smoothstep(0.0, 0.24, abs(sunDot));",
+            "totalEmissiveRadiance += vec3(1.0, 0.38, 0.12) * termK * termK * 0.05;",
+          ].join("\n")
+        );
+    };
+    return mat;
+  }, [map, nightMap]);
 
   // Real sidereal rotation, phased so the pad sits over Florida at liftoff.
   // The trajectory stays inertial; the planet turns beneath it, which also
@@ -98,9 +159,8 @@ function Earth() {
   return (
     <group>
       <group ref={spin}>
-        <mesh>
+        <mesh material={earthMat}>
           <sphereGeometry args={[EARTH_RADIUS_SCENE, 64, 64]} />
-          <meshStandardMaterial map={map} roughness={1} metalness={0} />
         </mesh>
         <mesh scale={1.002}>
           <sphereGeometry args={[EARTH_RADIUS_SCENE, 48, 48]} />
@@ -129,6 +189,31 @@ function Earth() {
   );
 }
 
+/* -------------------------------------------------------------- Skybox -- */
+
+/**
+ * The Milky Way as a distant backdrop: ESO/S. Brunier 360-degree panorama
+ * (eso0932a, CC BY 4.0), downscaled and deliberately dimmed — this is a
+ * mission-control display, so the galaxy is an accent behind the data, not
+ * wallpaper. Galactic-coordinate image, tilted roughly like the real band
+ * against the equatorial frame the ephemeris flies in. drei Stars stay on
+ * top (inside this sphere) for bright-point sparkle the JPEG can't carry.
+ */
+function MilkyWay() {
+  const map = useLoader(THREE.TextureLoader, "/textures/milkyway.jpg");
+  map.colorSpace = THREE.SRGBColorSpace;
+  return (
+    <mesh
+      rotation={[THREE.MathUtils.degToRad(60), THREE.MathUtils.degToRad(-32), 0]}
+      renderOrder={-2}
+      frustumCulled={false}
+    >
+      <sphereGeometry args={[1400, 48, 24]} />
+      <meshBasicMaterial map={map} side={THREE.BackSide} depthWrite={false} color="#565e6c" />
+    </mesh>
+  );
+}
+
 /* ----------------------------------------------------------------- Moon -- */
 
 const moonScratch = [0, 0, 0];
@@ -138,8 +223,12 @@ const moonScratch = [0, 0, 0];
 // Tidally locked: the same face turns toward Earth the whole way.
 function Moon() {
   const group = useRef();
-  const map = useLoader(THREE.TextureLoader, "/textures/moon.jpg");
+  const [map, normalMap] = useLoader(THREE.TextureLoader, [
+    "/textures/moon.jpg",
+    "/textures/moon-normal.jpg", // derived from LRO LOLA ldem_3 (SVS CGI Moon Kit)
+  ]);
   map.colorSpace = THREE.SRGBColorSpace;
+  normalMap.colorSpace = THREE.NoColorSpace;
 
   useFrame(() => {
     if (!group.current) return;
@@ -169,7 +258,14 @@ function Moon() {
       <group ref={group}>
         <mesh rotation={[0, Math.PI, 0]}>
           <sphereGeometry args={[MOON_RADIUS_SCENE, 48, 48]} />
-          <meshStandardMaterial map={map} roughness={1} metalness={0} />
+          {/* LOLA-derived normals give the terminator real crater relief. */}
+          <meshStandardMaterial
+            map={map}
+            roughness={1}
+            metalness={0}
+            normalMap={normalMap}
+            normalScale={[0.85, 0.85]}
+          />
         </mesh>
       </group>
       <primitive object={track} />
@@ -271,6 +367,32 @@ function Trajectory() {
 
 /* -------------------------------------------------------------- Capsule -- */
 
+/**
+ * Real propulsive windows (nothing fires outside them — the return is a
+ * free ride and entry is unpowered). Starts are the documented event times;
+ * durations: TLI's 5m55s is published, ARB rides its documented 15-minute
+ * burn window, the two perigee raises get the store's dwell windows.
+ * ICPS burns fly hydrolox blue-white, the SM's AJ10 a warm hypergolic tint.
+ */
+const BURNS = [
+  { start: EV.PRM, end: EV.PRM + 88, color: new THREE.Color("#bcdcff") },
+  { start: EV.ARB, end: EV.ARB + 900, color: new THREE.Color("#bcdcff") },
+  { start: EV.SM_PRB, end: EV.SM_PRB + 95, color: new THREE.Color("#ffc998") },
+  { start: EV.TLI, end: EV.TLI_END, color: new THREE.Color("#ffc998") },
+];
+
+function burnStateAt(met) {
+  for (const b of BURNS) {
+    if (met < b.start || met > b.end) continue;
+    const ease = Math.min(14, (b.end - b.start) * 0.3);
+    const k =
+      THREE.MathUtils.smoothstep(met, b.start, b.start + ease) *
+      (1 - THREE.MathUtils.smoothstep(met, b.end - ease, b.end));
+    return { k, color: b.color };
+  }
+  return null;
+}
+
 function makeGlowTexture() {
   const size = 128;
   const canvas = document.createElement("canvas");
@@ -336,6 +458,10 @@ function Capsule() {
   const group = useRef();
   const model = useRef();
   const sm = useRef();
+  const plume = useRef();
+  const plumeOuterMat = useRef();
+  const plumeCoreMat = useRef();
+  const plumeGlow = useRef();
   const plasma = useRef();
   const glow = useRef();
   const glowTex = useMemo(makeGlowTexture, []);
@@ -346,7 +472,7 @@ function Capsule() {
   const quat = useMemo(() => new THREE.Quaternion(), []);
   const flipQuat = useMemo(() => new THREE.Quaternion(), []);
 
-  useFrame(({ camera }, dt) => {
+  useFrame(({ camera, clock }, dt) => {
     const st = useMission.getState();
     const met = st.met;
     const s = stateAt(met);
@@ -404,12 +530,74 @@ function Capsule() {
       const sc = 0.05 + k * 0.22;
       plasma.current.scale.set(sc, sc, 1);
     }
+
+    // Engine plume, only inside the real burn windows. Length and glow ease
+    // in and out across each window; a wall-clock flicker keeps it alive
+    // whatever the warp. The plume rides the model group, so the attitude
+    // plumbing above already aims it opposite the velocity vector.
+    if (plume.current) {
+      const burn = burnStateAt(met);
+      const k = burn ? burn.k : 0;
+      plume.current.visible = k > 0.002;
+      if (plumeGlow.current) plumeGlow.current.visible = k > 0.002;
+      if (plume.current.visible) {
+        const f = 0.92 + 0.08 * Math.sin(clock.elapsedTime * 31.0);
+        plume.current.scale.set(Math.max(k * f, 0.02), 0.55 + 0.45 * k, 0.55 + 0.45 * k);
+        plumeOuterMat.current.opacity = 0.62 * k * f;
+        plumeOuterMat.current.color.copy(burn.color);
+        plumeCoreMat.current.opacity = 0.85 * k * f;
+        if (plumeGlow.current) {
+          plumeGlow.current.material.opacity = 0.85 * k;
+          plumeGlow.current.material.color.copy(burn.color);
+          const gs = 0.011 * (0.5 + 0.5 * k * f);
+          plumeGlow.current.scale.set(gs, gs, 1);
+        }
+      }
+    }
   });
 
   return (
     <group ref={group}>
       <group ref={model} scale={0.7}>
         <OrionModel smRef={sm} />
+        {/* Plume cones grow backward (-X) from the SM engine bell; the group
+            scales on X for length, Y/Z for spread. Hidden outside burns. */}
+        <group ref={plume} position={[-0.0155, 0, 0]} visible={false}>
+          <mesh rotation={[0, 0, Math.PI / 2]} position={[-0.016, 0, 0]}>
+            <coneGeometry args={[0.0056, 0.032, 16, 1, true]} />
+            <meshBasicMaterial
+              ref={plumeOuterMat}
+              color="#bcdcff"
+              transparent
+              opacity={0}
+              blending={THREE.AdditiveBlending}
+              depthWrite={false}
+              side={THREE.DoubleSide}
+            />
+          </mesh>
+          <mesh rotation={[0, 0, Math.PI / 2]} position={[-0.009, 0, 0]}>
+            <coneGeometry args={[0.0028, 0.018, 12, 1, true]} />
+            <meshBasicMaterial
+              ref={plumeCoreMat}
+              color="#ffffff"
+              transparent
+              opacity={0}
+              blending={THREE.AdditiveBlending}
+              depthWrite={false}
+              side={THREE.DoubleSide}
+            />
+          </mesh>
+        </group>
+        <sprite ref={plumeGlow} position={[-0.0165, 0, 0]} scale={[0.011, 0.011, 1]} visible={false}>
+          <spriteMaterial
+            map={glowTex}
+            color="#bcdcff"
+            transparent
+            opacity={0}
+            blending={THREE.AdditiveBlending}
+            depthWrite={false}
+          />
+        </sprite>
       </group>
       <sprite ref={glow} scale={[0.032, 0.032, 1]}>
         <spriteMaterial
@@ -637,6 +825,7 @@ export default function Scene({ reducedMotion }) {
       <ContextGuard />
       <Ticker />
       <Suspense fallback={null}>
+        <MilkyWay />
         <Earth />
         <Moon />
       </Suspense>

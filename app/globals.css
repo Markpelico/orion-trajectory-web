@@ -235,6 +235,25 @@ body {
   text-shadow: 0 0 70px rgba(252, 61, 33, 0.65);
 }
 
+.hud-slam-block {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* Plain-English line under the slam: small, dim, mono — a caption, not a
+   second headline. */
+.hud-slam-plain {
+  margin: 14px 0 0;
+  font-size: clamp(10px, 1.15vw, 13px);
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  text-align: center;
+  color: var(--dim);
+  text-shadow: 0 0 18px rgba(4, 5, 8, 0.9);
+  padding: 0 1em;
+}
+
 .hud-count {
   font-family: var(--font-display), sans-serif;
   font-weight: 700;
