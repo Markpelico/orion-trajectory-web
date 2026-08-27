@@ -21,6 +21,7 @@ import {
   EV,
 } from "@/lib/mission";
 import { useMission, autoWarp } from "@/lib/store";
+import { useInspect } from "@/lib/inspect";
 
 /** Current effective warp — the finite-difference dt for attitude and camera
  *  work scales with it so direction vectors stay clean at every speed. */
@@ -627,6 +628,264 @@ function Capsule() {
   );
 }
 
+/* -------------------------------------------------------------- Inspect -- */
+
+function makeCrosshairTexture() {
+  const size = 64;
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  ctx.strokeStyle = "rgba(255,255,255,0.95)";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(32, 32, 17, 0, Math.PI * 2);
+  ctx.stroke();
+  // Cross ticks with a gap around the ring, mission-control reticle style.
+  ctx.beginPath();
+  for (const [x1, y1, x2, y2] of [
+    [32, 2, 32, 11],
+    [32, 53, 32, 62],
+    [2, 32, 11, 32],
+    [53, 32, 62, 32],
+  ]) {
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+  }
+  ctx.stroke();
+  return new THREE.CanvasTexture(canvas);
+}
+
+/**
+ * Trajectory inspection: nearest-sample search in screen space. Raycasting
+ * fat Line2 geometry is possible (raycaster.params.Line2) but noisy at
+ * grazing angles; projecting all 1,721 ephemeris samples and picking the
+ * closest to the pointer is exact, cheap (~100k flops), and lands on a real
+ * table row — the chip shows actual JPL Horizons data, never interpolation.
+ *
+ * Pointer handling deliberately never captures or stops propagation, so
+ * OrbitControls drags keep working; a "click" is pointerdown→up within a few
+ * pixels. Touch taps pin the chip (with a JUMP HERE button) instead of
+ * seeking under the finger.
+ */
+function segmentHitsSphere(cam, dir, len, cx, cy, cz, r) {
+  // Ray from camera along dir (unit), does it enter the sphere before len?
+  const ocx = cx - cam.x;
+  const ocy = cy - cam.y;
+  const ocz = cz - cam.z;
+  const b = ocx * dir.x + ocy * dir.y + ocz * dir.z;
+  if (b <= 0 || b >= len + r) return false;
+  const perp2 = ocx * ocx + ocy * ocy + ocz * ocz - b * b;
+  const rr = r * r;
+  if (perp2 >= rr) return false;
+  return b - Math.sqrt(rr - perp2) < len - 1e-3;
+}
+
+function InspectLayer() {
+  const { camera, size, gl } = useThree();
+  const setHover = useInspect((s) => s.setHover);
+  const setPinned = useInspect((s) => s.setPinned);
+  const marker = useRef();
+  const markerTex = useMemo(makeCrosshairTexture, []);
+  const proj = useMemo(() => new THREE.Vector3(), []);
+  const rayDir = useMemo(() => new THREE.Vector3(), []);
+  const ptr = useRef({
+    x: 0,
+    y: 0,
+    active: false,
+    downX: 0,
+    downY: 0,
+    downAt: 0,
+    lastWritten: null, // {i, px, py} to skip redundant store writes
+  });
+
+  // Nearest visible (non-occluded) sample to a CSS-pixel point, or null.
+  function nearest(px, py, threshold) {
+    const { pos, n } = SAMPLES;
+    const met = useMission.getState().met;
+    moonPosAt(met, moonScratch);
+    const t2 = threshold * threshold;
+    const w = size.width;
+    const h = size.height;
+    const cand = [];
+    for (let i = 0; i < n; i++) {
+      const x = pos[i * 3];
+      const y = pos[i * 3 + 1];
+      const z = pos[i * 3 + 2];
+      proj.set(x, y, z).project(camera);
+      if (proj.z < -1 || proj.z > 1) continue; // behind / beyond far plane
+      const sx = ((proj.x + 1) / 2) * w;
+      const sy = ((1 - proj.y) / 2) * h;
+      const dx = sx - px;
+      const dy = sy - py;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < t2) cand.push({ i, d2, x, y, z });
+    }
+    cand.sort((a, b) => a.d2 - b.d2);
+    for (const c of cand) {
+      rayDir.set(c.x - camera.position.x, c.y - camera.position.y, c.z - camera.position.z);
+      const len = rayDir.length();
+      if (len < 1e-6) continue;
+      rayDir.multiplyScalar(1 / len);
+      if (segmentHitsSphere(camera.position, rayDir, len, 0, 0, 0, EARTH_RADIUS_SCENE)) continue;
+      if (
+        segmentHitsSphere(
+          camera.position,
+          rayDir,
+          len,
+          moonScratch[0],
+          moonScratch[1],
+          moonScratch[2],
+          MOON_RADIUS_SCENE
+        )
+      )
+        continue;
+      return c;
+    }
+    return null;
+  }
+
+  // Stable ref so the effect below can call the latest closure.
+  const nearestRef = useRef(nearest);
+  nearestRef.current = nearest;
+
+  useEffect(() => {
+    const el = gl.domElement;
+    const p = ptr.current;
+
+    const onMove = (e) => {
+      if (e.pointerType === "touch") return; // no hover on touch
+      const rect = el.getBoundingClientRect();
+      p.x = e.clientX - rect.left;
+      p.y = e.clientY - rect.top;
+      // Dragging (orbit rotate, scrub spillover): suspend hover entirely.
+      p.active = e.buttons === 0;
+      if (!p.active && p.lastWritten) {
+        p.lastWritten = null;
+        useInspect.getState().setHover(null);
+      }
+    };
+    const onLeave = () => {
+      p.active = false;
+      if (p.lastWritten) {
+        p.lastWritten = null;
+        useInspect.getState().setHover(null);
+      }
+    };
+    const onDown = (e) => {
+      if (!e.isPrimary) return;
+      p.downX = e.clientX;
+      p.downY = e.clientY;
+      p.downAt = performance.now();
+    };
+    const onUp = (e) => {
+      if (!e.isPrimary) return;
+      const dx = e.clientX - p.downX;
+      const dy = e.clientY - p.downY;
+      if (dx * dx + dy * dy > 36 || performance.now() - p.downAt > 600) return; // a drag, not a click
+      const rect = el.getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      const py = e.clientY - rect.top;
+      if (e.pointerType === "touch") {
+        const hit = nearestRef.current(px, py, 30);
+        useInspect.getState().setPinned(hit ? { i: hit.i, px, py } : null);
+      } else {
+        const hit = nearestRef.current(px, py, 16);
+        if (hit) {
+          useInspect.getState().setPinned(null);
+          useMission.getState().seek(SAMPLES.ts[hit.i]);
+        }
+      }
+    };
+
+    el.addEventListener("pointermove", onMove, { passive: true });
+    el.addEventListener("pointerleave", onLeave, { passive: true });
+    el.addEventListener("pointerdown", onDown, { passive: true });
+    el.addEventListener("pointerup", onUp, { passive: true });
+    return () => {
+      el.removeEventListener("pointermove", onMove);
+      el.removeEventListener("pointerleave", onLeave);
+      el.removeEventListener("pointerdown", onDown);
+      el.removeEventListener("pointerup", onUp);
+    };
+  }, [gl]);
+
+  useFrame(() => {
+    const p = ptr.current;
+    // Re-scan every frame while a mouse rests on the canvas: the camera keeps
+    // moving under a still pointer, so hover must track the scene, not the
+    // last pointermove event.
+    if (p.active) {
+      const hit = nearest(p.x, p.y, 16);
+      const last = p.lastWritten;
+      if (!hit && last) {
+        p.lastWritten = null;
+        setHover(null);
+      } else if (hit && (!last || last.i !== hit.i || Math.abs(last.px - p.x) + Math.abs(last.py - p.y) > 2)) {
+        p.lastWritten = { i: hit.i, px: p.x, py: p.y };
+        setHover(p.lastWritten);
+      }
+    }
+
+    // Crosshair marker on the inspected sample, constant ~26 px on screen.
+    const ins = useInspect.getState();
+    const target = ins.hover ?? ins.pinned;
+    if (marker.current) {
+      marker.current.visible = !!target;
+      if (target) {
+        const { pos } = SAMPLES;
+        const i = target.i;
+        marker.current.position.set(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]);
+        const dist = marker.current.position.distanceTo(camera.position);
+        const worldPerPx =
+          (2 * dist * Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5))) / size.height;
+        const s = 26 * worldPerPx;
+        marker.current.scale.set(s, s, 1);
+      }
+    }
+  });
+
+  return (
+    <sprite ref={marker} visible={false} renderOrder={10}>
+      <spriteMaterial
+        map={markerTex}
+        color="#ffffff"
+        transparent
+        opacity={0.95}
+        depthTest={false}
+        depthWrite={false}
+      />
+    </sprite>
+  );
+}
+
+/**
+ * Tiny hook for the Playwright audits: lets a headless run seek the mission
+ * clock and ask where a mission time lands on screen, so scripts can hover
+ * the real trajectory instead of guessing pixels. Harmless in production.
+ */
+function AuditHook() {
+  const { camera, size } = useThree();
+  useEffect(() => {
+    window.__orion = {
+      state: () => useMission.getState(),
+      seek: (t) => useMission.getState().seek(t),
+      screenAt: (t) => {
+        const s = stateAt(t);
+        const v = new THREE.Vector3(s.x, s.y, s.z).project(camera);
+        return {
+          x: ((v.x + 1) / 2) * size.width,
+          y: ((1 - v.y) / 2) * size.height,
+          z: v.z,
+        };
+      },
+    };
+    return () => {
+      delete window.__orion;
+    };
+  }, [camera, size]);
+  return null;
+}
+
 /* -------------------------------------------------------------- Cameras -- */
 
 function CameraRig() {
@@ -835,6 +1094,8 @@ export default function Scene({ reducedMotion }) {
       </Suspense>
       <Trajectory />
       <Capsule />
+      <InspectLayer />
+      <AuditHook />
       <CameraRig />
       <Stars radius={1200} depth={120} count={3000} factor={12} saturation={0} fade speed={0} />
       {!reducedMotion && (

@@ -516,6 +516,89 @@ body {
   max-width: 640px;
 }
 
+/* Inspect chip — floating readout of one real ephemeris row */
+
+.hud-inspect {
+  position: fixed;
+  z-index: 15;
+  width: 216px;
+  padding: 10px 12px 9px;
+  border: 1px solid var(--line);
+  background: rgba(4, 5, 8, 0.88);
+  backdrop-filter: blur(6px);
+  pointer-events: none; /* hover chip must not steal the pointer it follows */
+  font-size: 10px;
+  letter-spacing: 0.1em;
+}
+
+.hud-inspect::before,
+.hud-inspect::after {
+  content: "";
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  border-color: var(--dim);
+  border-style: solid;
+}
+
+.hud-inspect::before {
+  top: -1px;
+  left: -1px;
+  border-width: 1px 0 0 1px;
+}
+
+.hud-inspect::after {
+  bottom: -1px;
+  right: -1px;
+  border-width: 0 1px 1px 0;
+}
+
+.hud-inspect.is-pinned {
+  pointer-events: auto;
+}
+
+.hud-inspect-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  padding: 2px 0;
+}
+
+.hud-inspect-row span {
+  color: var(--dim);
+  font-size: 9px;
+  letter-spacing: 0.18em;
+}
+
+.hud-inspect-row strong {
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.hud-inspect-src {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+  color: var(--faint);
+  font-size: 8px;
+  letter-spacing: 0.16em;
+}
+
+.hud-inspect-hint {
+  margin-top: 6px;
+  color: var(--dim);
+  font-size: 8px;
+  letter-spacing: 0.22em;
+}
+
+.hud-inspect-jump {
+  margin-top: 8px;
+  width: 100%;
+  text-align: center;
+}
+
 /* Complete overlay */
 
 .hud-complete {

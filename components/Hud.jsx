@@ -9,12 +9,16 @@ import {
   EV,
   STATS,
   ENTRY_PHASE_IDX,
+  SAMPLES,
+  moonPosAt,
+  MOON_RADIUS_SCENE,
   stateAt,
   phaseIndexAt,
   formatMET,
   formatKm,
 } from "@/lib/mission";
 import { useMission } from "@/lib/store";
+import { useInspect } from "@/lib/inspect";
 
 const SPAN = T_END - T_START;
 
@@ -257,6 +261,81 @@ function Telemetry({ s }) {
   );
 }
 
+/* ------------------------------------------------------------- Inspect -- */
+
+/**
+ * Floating chip for the trajectory inspector. Every number is read straight
+ * off the baked JPL Horizons sample the marker sits on — no interpolation —
+ * which is the whole point: hover any pixel of the line and see the real
+ * ephemeris row behind it. Desktop hovers show a hint (click seeks); touch
+ * taps pin the chip with an explicit JUMP HERE button.
+ */
+function InspectChip() {
+  const hover = useInspect((s) => s.hover);
+  const pinned = useInspect((s) => s.pinned);
+  const target = hover ?? pinned;
+  if (!target) return null;
+
+  const { ts, alt, speed, n } = SAMPLES;
+  const i = target.i;
+  const m = moonPosAt(ts[i], [0, 0, 0]);
+  const px3 = SAMPLES.pos;
+  const moonKm = Math.max(
+    0,
+    (Math.hypot(px3[i * 3] - m[0], px3[i * 3 + 1] - m[1], px3[i * 3 + 2] - m[2]) -
+      MOON_RADIUS_SCENE) *
+      1000
+  );
+
+  const isPinned = !hover && !!pinned;
+  const vw = typeof window !== "undefined" ? window.innerWidth : 1280;
+  const vh = typeof window !== "undefined" ? window.innerHeight : 800;
+  const W = 216;
+  const H = isPinned ? 196 : 168;
+  let left = target.px + 18;
+  if (left + W > vw - 8) left = Math.max(8, target.px - W - 14);
+  let top = target.py + 16;
+  if (top + H > vh - 8) top = Math.max(8, target.py - H - 12);
+
+  const rows = [
+    ["MET", formatMET(ts[i])],
+    ["EARTH RANGE", `${alt[i] >= 1000 ? formatKm(alt[i]).toLocaleString() : alt[i].toFixed(1)} KM`],
+    ["MOON RANGE", `${formatKm(moonKm).toLocaleString()} KM`],
+    ["VELOCITY", `${speed[i].toFixed(2)} KM/S`],
+  ];
+
+  return (
+    <div
+      className={isPinned ? "hud-inspect is-pinned" : "hud-inspect"}
+      style={{ left, top }}
+      role="status"
+    >
+      {rows.map(([label, value]) => (
+        <div className="hud-inspect-row" key={label}>
+          <span>{label}</span>
+          <strong>{value}</strong>
+        </div>
+      ))}
+      <div className="hud-inspect-src">
+        ROW {i + 1}/{n} · JPL HORIZONS
+      </div>
+      {isPinned ? (
+        <button
+          className="hud-btn hud-inspect-jump"
+          onClick={() => {
+            useMission.getState().seek(ts[i]);
+            useInspect.getState().setPinned(null);
+          }}
+        >
+          JUMP HERE
+        </button>
+      ) : (
+        <div className="hud-inspect-hint">CLICK TO JUMP</div>
+      )}
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------ Controls -- */
 
 // Manual presets sized for a nine-day mission: 25,000x runs a coast day in
@@ -428,6 +507,7 @@ export default function Hud({ reducedMotion }) {
       <PhaseRail phaseIdx={phaseIdx} />
       <PhaseSlam phaseIdx={phaseIdx} reducedMotion={reducedMotion} />
       <Countdown met={met} />
+      <InspectChip />
       <div className="hud-bottom">
         <Telemetry s={s} />
         <Controls />
