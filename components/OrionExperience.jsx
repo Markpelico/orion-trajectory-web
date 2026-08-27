@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Scene from "@/components/Scene";
 import Hud from "@/components/Hud";
 import Boot from "@/components/Boot";
+import Shortcuts from "@/components/Shortcuts";
 import { parseHash } from "@/lib/deeplink";
 import { useMission } from "@/lib/store";
 
@@ -30,6 +31,7 @@ export default function OrionExperience() {
       <Scene reducedMotion={reducedMotion} />
       <div className="scanlines" aria-hidden="true" />
       <Hud reducedMotion={reducedMotion} />
+      <Shortcuts />
       <Boot />
     </main>
   );

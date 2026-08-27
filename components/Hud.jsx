@@ -638,6 +638,13 @@ function Controls() {
           </button>
         ))}
       </div>
+      <button
+        className="hud-help-link"
+        onClick={() => useMission.getState().setHelpOpen(true)}
+        title="Keyboard shortcuts"
+      >
+        ? SHORTCUTS
+      </button>
     </div>
   );
 }
