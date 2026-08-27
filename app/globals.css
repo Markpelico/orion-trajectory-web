@@ -1001,6 +1001,19 @@ body {
   justify-content: center;
 }
 
+.hud-complete-byline {
+  font-size: 9px;
+  letter-spacing: 0.24em;
+  color: var(--dim);
+  text-decoration: none;
+  transition: color 0.2s ease, text-shadow 0.2s ease;
+}
+
+.hud-complete-byline:hover {
+  color: var(--ink);
+  text-shadow: 0 0 12px rgba(237, 237, 242, 0.6);
+}
+
 /* ---------------------------------------------------------------- Boot -- */
 
 .boot {

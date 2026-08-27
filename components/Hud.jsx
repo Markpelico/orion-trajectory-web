@@ -113,6 +113,14 @@ function TopBar({ met }) {
         >
           SOURCE ↗
         </a>
+        <a
+          className="hud-link"
+          href="https://github.com/Markpelico/orion-trajectory-web#readme"
+          target="_blank"
+          rel="noreferrer"
+        >
+          HOW IT&apos;S BUILT ↗
+        </a>
         <a className="hud-link" href="https://www.markpelico.com" target="_blank" rel="noreferrer">
           MARKPELICO.COM ↗
         </a>
@@ -747,6 +755,14 @@ function Complete() {
             </button>
             <a
               className="hud-btn is-big"
+              href="https://github.com/Markpelico/orion-trajectory-web#readme"
+              target="_blank"
+              rel="noreferrer"
+            >
+              HOW IT&apos;S BUILT ↗
+            </a>
+            <a
+              className="hud-btn is-big"
               href="https://github.com/Markpelico/orion-trajectory-display"
               target="_blank"
               rel="noreferrer"
@@ -754,6 +770,14 @@ function Complete() {
               DESKTOP VERSION ↗
             </a>
           </div>
+          <a
+            className="hud-complete-byline"
+            href="https://www.markpelico.com"
+            target="_blank"
+            rel="noreferrer"
+          >
+            BUILT BY MARK PELICO — MARKPELICO.COM ↗
+          </a>
         </motion.div>
       )}
     </AnimatePresence>
