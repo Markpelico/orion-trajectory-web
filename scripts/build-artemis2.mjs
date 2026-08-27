@@ -216,6 +216,9 @@ async function main() {
   const wRet = await horizons({ COMMAND: "'-1024'", START_TIME: "'2026-04-07 06:00'", STOP_TIME: "'2026-04-10 21:00'", STEP_SIZE: "'20m'" }, "sc-return");
   const wEnd = await horizons({ COMMAND: "'-1024'", START_TIME: "'2026-04-10 21:00'", STOP_TIME: "'2026-04-10 23:51'", STEP_SIZE: "'1m'" }, "sc-endgame");
   const wMoon = await horizons({ COMMAND: "'301'", START_TIME: "'2026-04-01 22:00'", STOP_TIME: "'2026-04-11 01:00'", STEP_SIZE: "'1h'" }, "moon");
+  // Real Sun direction (mid-mission) so launch dusk, Earth's terminator and
+  // the Moon's waning-gibbous phase all light the way they actually did.
+  const wSun = await horizons({ COMMAND: "'10'", START_TIME: "'2026-04-06 00:00'", STOP_TIME: "'2026-04-06 02:00'", STEP_SIZE: "'1h'" }, "sun");
 
   const sc = [];
   for (const text of [wHeo, wOut, wFly, wRet, wEnd]) {
@@ -224,6 +227,8 @@ async function main() {
     }
   }
   const moon = parseVectors(wMoon);
+  const sunRaw = parseVectors(wSun)[0].r;
+  const sunDirJ2000 = unit(sunRaw);
   console.log(`spacecraft samples: ${sc.length}, moon samples: ${moon.length}`);
   console.log(`SPK MET span: ${sc[0].t.toFixed(1)} .. ${sc[sc.length - 1].t.toFixed(1)} s`);
 
@@ -297,7 +302,12 @@ async function main() {
   // --- 3. Ascent envelope 0 -> T_INSERT ------------------------------------
   const altIns = norm(atIns.r) - R;
   const vIns = norm(atIns.v);
-  const ascentAlt = (t) => altIns * (1 - Math.pow(1 - t / T_INSERT, 2.2));
+  // Smoothstep: slow off the pad (TWR ~1.2), fastest mid-ascent, flattening
+  // into horizontal flight at insertion.
+  const ascentAlt = (t) => {
+    const tau = Math.min(1, t / T_INSERT);
+    return altIns * (3 * tau * tau - 2 * tau * tau * tau);
+  };
   const ascentSpeed = (t) => 0.05 + (vIns - 0.05) * Math.pow(t / T_INSERT, 1.6);
   const ascentG = (t) => {
     // SLS-flavored: build to ~2.9g before SRB sep, dip, second build, MECO cut.
@@ -527,6 +537,7 @@ async function main() {
       },
       earthPhase0: r4(earthPhase0),
       earthOmega,
+      sunDir: toScene(sunDirJ2000).map(r4),
     },
     sc: {
       t: kept.map((s) => Math.round(s.t * 10) / 10),

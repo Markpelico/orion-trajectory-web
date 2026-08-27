@@ -3,6 +3,9 @@
  * the moments that matter. WebGL renders through SwiftShader, so visuals are
  * real but frame rates are not representative of hardware.
  *
+ * This is the quick generic sweep; scripts/artemis-audit.mjs is the
+ * mission-specific pass that seeks to every Artemis II event.
+ *
  *   node scripts/visual-audit.mjs [baseUrl] [outDir]
  */
 import { chromium } from "playwright";
@@ -45,8 +48,8 @@ async function run() {
   await page.waitForTimeout(9000); // liftoff, early ascent (1x)
   await shoot(page, "03-liftoff");
 
-  await page.getByRole("button", { name: "300×" }).click();
-  await page.waitForTimeout(4000); // deep in ascent / orbit
+  await page.getByRole("button", { name: "25K×" }).click();
+  await page.waitForTimeout(4000); // deep into the mission at max warp
   await shoot(page, "04-orbit-chase");
 
   // Orbit camera + a drag, the reported black-screen scenario.
